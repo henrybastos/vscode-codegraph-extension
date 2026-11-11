@@ -6,7 +6,8 @@ import type { DatabaseSchema } from '../storage/types.js';
 import { searchSymbols } from '../storage/sync.js';
 import type { CodeGraphCache } from '../graph/graph-manager.js';
 import type { OpenRouterClient } from '../ai/openrouter.js';
-import { buildArchitecturalAuditPrompt } from '../ai/prompts.js';
+import { buildArchitecturalAuditPrompt, buildProjectStructurePrompt } from '../ai/prompts.js';
+import { generateProjectFileTree, extractProjectMetadata } from '../ai/structure-scanner.js';
 
 export class CodeGraphWebviewProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = 'codegraph.sidebarView';
@@ -113,12 +114,12 @@ export class CodeGraphWebviewProvider implements vscode.WebviewViewProvider {
 
         const config = vscode.workspace.getConfiguration('codegraph');
         const depth = config.get<number>('maxTraversalDepth', 2);
-        const model = config.get<string>('openRouterModel', 'meta-llama/llama-3.3-70b-instruct:free');
+        const model = config.get<string>('openRouterModel', 'google/gemma-4-31b-it:free');
 
         const subgraphContext = this.graphCache.extractSubgraphContext(nodeId, depth);
         const { system, user } = buildArchitecturalAuditPrompt(subgraphContext);
 
-        webview.postMessage({ type: 'ai_start', payload: { nodeId } });
+        webview.postMessage({ type: 'ai_start', payload: { mode: 'symbol', nodeId } });
 
         await this.aiClient.streamCompletion(
           [
@@ -136,6 +137,58 @@ export class CodeGraphWebviewProvider implements vscode.WebviewViewProvider {
             onError: (error) => {
               webview.postMessage({ type: 'ai_error', payload: error });
               vscode.window.showErrorMessage(`AI Audit failed: ${error}`);
+            }
+          },
+          this.currentAbortController.signal
+        );
+        break;
+      }
+
+      case 'analyze_project_structure': {
+        const folders = vscode.workspace.workspaceFolders;
+        if (!folders || folders.length === 0) {
+          vscode.window.showWarningMessage('No active workspace folder to analyze.');
+          return;
+        }
+
+        if (this.currentAbortController) {
+          this.currentAbortController.abort();
+        }
+        this.currentAbortController = new AbortController();
+
+        const rootPath = folders[0].uri.fsPath;
+        const config = vscode.workspace.getConfiguration('codegraph');
+        const model = config.get<string>('openRouterModel', 'google/gemma-4-31b-it:free');
+
+        const { tree, stats } = generateProjectFileTree(rootPath);
+        const meta = extractProjectMetadata(rootPath);
+        const { system, user } = buildProjectStructurePrompt(tree, meta);
+
+        webview.postMessage({
+          type: 'ai_start',
+          payload: {
+            mode: 'structure',
+            projectName: path.basename(rootPath),
+            stats
+          }
+        });
+
+        await this.aiClient.streamCompletion(
+          [
+            { role: 'system', content: system },
+            { role: 'user', content: user }
+          ],
+          model,
+          {
+            onChunk: (chunk) => {
+              webview.postMessage({ type: 'ai_chunk', payload: chunk });
+            },
+            onComplete: () => {
+              webview.postMessage({ type: 'ai_complete' });
+            },
+            onError: (error) => {
+              webview.postMessage({ type: 'ai_error', payload: error });
+              vscode.window.showErrorMessage(`Structure audit failed: ${error}`);
             }
           },
           this.currentAbortController.signal

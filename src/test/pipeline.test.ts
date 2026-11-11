@@ -8,6 +8,8 @@ import { CodeGraphCache } from '../graph/graph-manager.js';
 import { detectCyclesInSubgraph, computeNodeCoupling } from '../graph/metrics.js';
 import { initTreeSitter, parseFileAst } from '../parser/treesitter.js';
 import { OpenRouterClient } from '../ai/openrouter.js';
+import { generateProjectFileTree, extractProjectMetadata } from '../ai/structure-scanner.js';
+import { buildProjectStructurePrompt } from '../ai/prompts.js';
 
 test('1. SQLite & Kysely initialization and FTS5 triggers', async () => {
   const tmpDir = path.resolve('dist/test_storage');
@@ -137,16 +139,32 @@ test('3. Tree-sitter WASM Parser for TypeScript / TSX / JS', async () => {
 test('4. OpenRouter Free Model Validation', () => {
   const client = new OpenRouterClient();
   assert.strictEqual(
-    client.ensureFreeModel('meta-llama/llama-3.3-70b-instruct:free'),
-    'meta-llama/llama-3.3-70b-instruct:free'
+    client.ensureFreeModel('nvidia/nemotron-3.5-lightning:free'),
+    'nvidia/nemotron-3.5-lightning:free'
   );
   assert.strictEqual(
-    client.ensureFreeModel('google/gemini-2.0-flash-exp:free'),
-    'google/gemini-2.0-flash-exp:free'
+    client.ensureFreeModel('google/gemma-4-31b-it:free'),
+    'google/gemma-4-31b-it:free'
   );
   // Non-free model should fallback to default free model
   assert.strictEqual(
     client.ensureFreeModel('openai/gpt-4o'),
-    'meta-llama/llama-3.3-70b-instruct:free'
+    'nvidia/nemotron-3.5-lightning:free'
   );
+});
+
+test('5. Project File Structure Scanner & Prompt Generation', () => {
+  const { tree, stats } = generateProjectFileTree(process.cwd());
+  assert.ok(stats.files > 0);
+  assert.ok(stats.directories > 0);
+  assert.ok(!tree.includes('node_modules/'), 'Should exclude node_modules');
+  assert.ok(!tree.includes('.git/'), 'Should exclude .git');
+  assert.ok(tree.includes('package.json'), 'Should include root package.json');
+
+  const meta = extractProjectMetadata(process.cwd());
+  assert.ok(meta.includes('vscode-codegraph-rag'));
+
+  const prompt = buildProjectStructurePrompt(tree, meta);
+  assert.ok(prompt.system.includes('Software Architect'));
+  assert.ok(prompt.user.includes(meta));
 });

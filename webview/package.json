@@ -9,6 +9,7 @@
     "check": "svelte-check --tsconfig ./tsconfig.json"
   },
   "dependencies": {
+    "@comark/svelte": "^0.9.1",
     "svelte": "^5.25.0"
   },
   "devDependencies": {
