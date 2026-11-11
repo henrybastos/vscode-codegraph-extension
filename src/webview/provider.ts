@@ -10,7 +10,7 @@ import { buildArchitecturalAuditPrompt, buildProjectStructurePrompt } from '../a
 import { generateProjectFileTree, extractProjectMetadata } from '../ai/structure-scanner.js';
 import { buildFileGraph, runTier0Assertions } from '../graph/assertions.js';
 import { LocalGGUFModelManager } from '../models/model-manager.js';
-import { runLocalLlamaInference, disposeLocalLlama } from '../ai/local-llama.js';
+import { runLocalLlamaInference, runLocalFileAnalysis, disposeLocalLlama } from '../ai/local-llama.js';
 import { purgeIgnoredFiles, isIgnoredPath } from '../parser/watcher.js';
 
 export class CodeGraphWebviewProvider implements vscode.WebviewViewProvider {
@@ -110,7 +110,8 @@ export class CodeGraphWebviewProvider implements vscode.WebviewViewProvider {
         try {
           const workspaceFolders = vscode.workspace.workspaceFolders;
           if (!workspaceFolders || workspaceFolders.length === 0) return;
-          const fullPath = path.resolve(workspaceFolders[0].uri.fsPath, filePath);
+          const cleanRelPath = filePath.replace(/^[/\\]+/, '');
+          const fullPath = path.resolve(workspaceFolders[0].uri.fsPath, cleanRelPath);
           const doc = await vscode.workspace.openTextDocument(fullPath);
           const line = Math.max(0, (startLine || 1) - 1);
           const pos = new vscode.Position(line, 0);
@@ -401,6 +402,102 @@ export class CodeGraphWebviewProvider implements vscode.WebviewViewProvider {
           webview.postMessage({
             type: 'hotspots_error',
             payload: err?.message || String(err)
+          });
+        }
+        break;
+      }
+
+      case 'analyse_file_local': {
+        const { item } = message;
+        if (!item || !item.path) return;
+
+        const isDownloaded = LocalGGUFModelManager.isModelDownloaded(this.globalStoragePath);
+        if (!isDownloaded) {
+          vscode.window.showWarningMessage('CodeGraph: Local Qwen 2.5 Coder model is not downloaded yet.');
+          webview.postMessage({
+            type: 'file_analysis_error',
+            payload: { id: item.id, filePath: item.path, error: 'Model not downloaded. Download it first from the header badge.' }
+          });
+          return;
+        }
+
+        const modelPath = LocalGGUFModelManager.getModelPath(this.globalStoragePath);
+        const folders = vscode.workspace.workspaceFolders;
+        let sourceCodeSnippet = '';
+        if (folders && folders.length > 0) {
+          try {
+            const cleanRelPath = item.path.replace(/^[/\\]+/, '');
+            const fullPath = path.resolve(folders[0].uri.fsPath, cleanRelPath);
+            if (fs.existsSync(fullPath) && fs.statSync(fullPath).isFile()) {
+              const content = fs.readFileSync(fullPath, 'utf8');
+              const lines = content.split('\n');
+              sourceCodeSnippet = lines.slice(0, 150).join('\n');
+              if (lines.length > 150) {
+                sourceCodeSnippet += '\n// ... [remaining lines truncated for prompt context]';
+              }
+            }
+          } catch {}
+        }
+
+        // Collect symbol and coupling topology from graph cache
+        const symbols: string[] = [];
+        const dependencies: string[] = [];
+        const dependents: string[] = [];
+        const normTarget = item.path.replace(/\\/g, '/').replace(/^[/\\]+/, '').toLowerCase();
+
+        this.graphCache.graph.forEachNode((nodeId, attrs: any) => {
+          const nodePath = (attrs.filePath || '').replace(/\\/g, '/').replace(/^[/\\]+/, '').toLowerCase();
+          if (nodePath === normTarget) {
+            symbols.push(`${attrs.name} (${attrs.kind})`);
+            for (const outNeighbor of this.graphCache.graph.outNeighbors(nodeId)) {
+              dependencies.push(outNeighbor);
+            }
+            for (const inNeighbor of this.graphCache.graph.inNeighbors(nodeId)) {
+              dependents.push(inNeighbor);
+            }
+          }
+        });
+
+        const metrics = item.metrics || {};
+
+        webview.postMessage({
+          type: 'file_analysis_start',
+          payload: { id: item.id, filePath: item.path }
+        });
+
+        try {
+          await runLocalFileAnalysis(
+            modelPath,
+            {
+              path: item.path,
+              category: item.category,
+              description: item.description,
+              loc: metrics.loc,
+              fanIn: metrics.fanIn,
+              fanOut: metrics.fanOut,
+              instability: metrics.instability,
+              symbols: symbols.slice(0, 20),
+              dependencies: Array.from(new Set(dependencies)).slice(0, 10),
+              dependents: Array.from(new Set(dependents)).slice(0, 10),
+              sourceCodeSnippet
+            },
+            (chunk) => {
+              webview.postMessage({
+                type: 'file_analysis_chunk',
+                payload: { id: item.id, filePath: item.path, chunk }
+              });
+            }
+          );
+
+          webview.postMessage({
+            type: 'file_analysis_complete',
+            payload: { id: item.id, filePath: item.path }
+          });
+        } catch (err: any) {
+          vscode.window.showErrorMessage(`Analysis of ${item.path} failed: ${err.message}`);
+          webview.postMessage({
+            type: 'file_analysis_error',
+            payload: { id: item.id, filePath: item.path, error: err.message }
           });
         }
         break;

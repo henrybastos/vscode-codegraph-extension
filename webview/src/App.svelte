@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import SearchBar from './components/SearchBar.svelte';
   import AdvicePanel from './components/AdvicePanel.svelte';
-  import Hotspots, { type HotspotItem, type AnalysisStats } from './components/Hotspots.svelte';
+  import Hotspots, { type HotspotItem, type AnalysisStats, type FileAnalysisState } from './components/Hotspots.svelte';
 
   const vscode = acquireVsCodeApi();
 
@@ -14,6 +14,7 @@
   let aiAdvice = $state('');
   let auditMode = $state<'structure' | 'symbol' | null>(null);
   let analysisStats = $state<{ directories: number; files: number } | null>(null);
+  let fileAnalyses = $state<Record<string, FileAnalysisState>>({});
 
   let modelStatus = $state<{ isDownloaded: boolean; sizeMb: number }>({ isDownloaded: false, sizeMb: 0 });
   let downloadProgress = $state<{ pct: number; loadedMb: number; totalMb: number } | null>(null);
@@ -66,6 +67,26 @@
     vscode.postMessage({ command: 'set_api_key' });
   }
 
+  function handleOpenFile(filePath: string) {
+    vscode.postMessage({ command: 'open_location', filePath, startLine: 1 });
+  }
+
+  function handleAnalyseFile(item: HotspotItem) {
+    fileAnalyses[item.id] = {
+      isAnalyzing: true,
+      content: '',
+      expanded: true
+    };
+    const plainItem = JSON.parse(JSON.stringify($state.snapshot(item)));
+    vscode.postMessage({ command: 'analyse_file_local', item: plainItem });
+  }
+
+  function handleToggleExpand(id: string) {
+    if (fileAnalyses[id]) {
+      fileAnalyses[id].expanded = !fileAnalyses[id].expanded;
+    }
+  }
+
   window.addEventListener('message', async (event) => {
     const { type, payload } = event.data;
     if (type === 'model_status') {
@@ -115,6 +136,31 @@
     } else if (type === 'ai_error') {
       isAnalyzing = false;
       aiAdvice += `\n\n> ⚠️ **Error:** ${payload}`;
+    } else if (type === 'file_analysis_start') {
+      const { id } = payload;
+      fileAnalyses[id] = {
+        isAnalyzing: true,
+        content: '',
+        expanded: true
+      };
+    } else if (type === 'file_analysis_chunk') {
+      const { id, chunk } = payload;
+      if (!fileAnalyses[id]) {
+        fileAnalyses[id] = { isAnalyzing: true, content: '', expanded: true };
+      }
+      fileAnalyses[id].content += chunk;
+    } else if (type === 'file_analysis_complete') {
+      const { id } = payload;
+      if (fileAnalyses[id]) {
+        fileAnalyses[id].isAnalyzing = false;
+      }
+    } else if (type === 'file_analysis_error') {
+      const { id, error } = payload;
+      if (!fileAnalyses[id]) {
+        fileAnalyses[id] = { isAnalyzing: false, content: '', expanded: true };
+      }
+      fileAnalyses[id].isAnalyzing = false;
+      fileAnalyses[id].error = error;
     }
   });
 </script>
@@ -159,9 +205,13 @@
       {downloadProgress}
       {analysisError}
       {isDownloadingModel}
+      {fileAnalyses}
       onDownloadModel={handleDownloadModel}
       onDeleteModel={handleDeleteModel}
       onRetry={handleAnalyzeProjectLocal}
+      onOpenFile={handleOpenFile}
+      onAnalyseFile={handleAnalyseFile}
+      onToggleExpand={handleToggleExpand}
     />
   </div>
 </main>

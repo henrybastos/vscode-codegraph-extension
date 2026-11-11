@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { Markdown } from '@comark/svelte';
+
   export interface HotspotItem {
     id: string;
     type: 'file' | 'folder';
@@ -39,6 +41,13 @@
     phase?: string;
   }
 
+  export interface FileAnalysisState {
+    isAnalyzing: boolean;
+    content: string;
+    error?: string;
+    expanded: boolean;
+  }
+
   let {
     hotspots = [],
     isAnalyzing = false,
@@ -48,9 +57,13 @@
     downloadProgress = null,
     analysisError = '',
     isDownloadingModel = false,
+    fileAnalyses = {},
     onDownloadModel,
     onDeleteModel,
-    onRetry
+    onRetry,
+    onOpenFile,
+    onAnalyseFile,
+    onToggleExpand
   }: {
     hotspots?: HotspotItem[];
     isAnalyzing?: boolean;
@@ -60,9 +73,13 @@
     downloadProgress?: ProgressInfo | null;
     analysisError?: string;
     isDownloadingModel?: boolean;
+    fileAnalyses?: Record<string, FileAnalysisState>;
     onDownloadModel?: () => void;
     onDeleteModel?: () => void;
     onRetry?: () => void;
+    onOpenFile?: (path: string) => void;
+    onAnalyseFile?: (item: HotspotItem) => void;
+    onToggleExpand?: (id: string) => void;
   } = $props();
 
   function getCardTheme(category: string) {
@@ -184,7 +201,7 @@
         Hotspots {hotspots.length > 0 ? `(${hotspots.length})` : ''}
       </h2>
       {#if isAnalyzing}
-        <span class="text-xs text-amber-400 animate-pulse truncate max-w-[200px]" title={statusMessage}>
+        <span class="text-xs text-amber-400 animate-pulse truncate" title={statusMessage}>
           {statusMessage || 'Running inference...'}
         </span>
       {/if}
@@ -218,8 +235,9 @@
     {#if hotspots.length > 0}
       {#each hotspots as item (item.id)}
         {@const theme = getCardTheme(item.category)}
+        {@const analysis = fileAnalyses[item.id]}
         <div class="flex flex-col w-full border {theme.container} p-3 rounded-md transition-all">
-          <div class="inline-flex justify-between mb-1 gap-2">
+          <div class="inline-flex justify-between items-start mb-1 gap-2">
             <div class="flex flex-col min-w-0">
               <div class="inline-flex items-center *:leading-none gap-1 mb-1">
                 <span class="{theme.title} font-medium">{item.category}</span>
@@ -231,15 +249,77 @@
               </span>
             </div>
 
-            <button
-              class="{theme.btn} text-xs px-3 py-2 h-fit mb-auto rounded transition-colors leading-none cursor-pointer shrink-0"
-              title="Analyse"
-            >
-              Analyse
-            </button>
+            <!-- Action Buttons: Open & Analyse -->
+            <div class="flex items-center gap-1.5 shrink-0">
+              {#if item.type === 'file'}
+                <button
+                  type="button"
+                  onclick={() => onOpenFile?.(item.path)}
+                  class="text-xs px-2.5 py-1.5 h-fit rounded border border-[var(--vscode-button-border,transparent)] bg-[var(--vscode-button-secondaryBackground,#2a2d2e)] text-[var(--vscode-button-secondaryForeground,#cccccc)] hover:bg-[var(--vscode-button-secondaryHoverBackground,#37373d)] transition-colors leading-none cursor-pointer flex items-center gap-1"
+                  title="Open file in editor"
+                >
+                  <span>Open</span>
+                </button>
+              {/if}
+
+              <button
+                type="button"
+                onclick={() => onAnalyseFile?.(item)}
+                disabled={analysis?.isAnalyzing}
+                class="{theme.btn} text-xs px-3 py-1.5 h-fit rounded transition-colors leading-none cursor-pointer flex items-center gap-1 disabled:opacity-50"
+                title="Analyse this {item.type}"
+              >
+                {#if analysis?.isAnalyzing}
+                  <span class="inline-block animate-spin">⚙️</span>
+                  <span>Analysing...</span>
+                {:else if analysis?.content}
+                  <span>Re-analyse</span>
+                {:else}
+                  <span>Analyse</span>
+                {/if}
+              </button>
+            </div>
           </div>
 
           <p class="text-xs text-[var(--vscode-foreground)] leading-relaxed mt-1">{item.description}</p>
+
+          <!-- Inline Analysis Expansion Section -->
+          {#if analysis}
+            <div class="mt-3 pt-2.5 border-t border-[var(--vscode-widget-border,#333)] text-xs">
+              <div class="flex items-center justify-between mb-1.5">
+                <div class="flex items-center gap-1.5 text-[11px] font-medium text-[var(--vscode-descriptionForeground)]">
+                  <span class="inline-block w-2 h-2 rounded-full {analysis.isAnalyzing ? 'bg-amber-400 animate-ping' : 'bg-emerald-400'}"></span>
+                  <span>Qwen 2.5 Coder Architectural Diagnosis</span>
+                </div>
+                {#if analysis.content}
+                  <button
+                    type="button"
+                    onclick={() => onToggleExpand?.(item.id)}
+                    class="text-[10px] text-[var(--vscode-textLink-foreground,#3794ff)] hover:underline cursor-pointer"
+                  >
+                    {analysis.expanded ? 'Collapse' : 'Expand'}
+                  </button>
+                {/if}
+              </div>
+
+              {#if analysis.error}
+                <div class="p-2 rounded bg-rose-950/30 border border-rose-800/40 text-rose-300 text-[11px]">
+                  ⚠️ {analysis.error}
+                </div>
+              {:else if analysis.expanded}
+                {#if analysis.isAnalyzing && !analysis.content}
+                  <div class="flex items-center gap-2 p-3 text-[var(--vscode-descriptionForeground)] text-[11px]">
+                    <span class="animate-spin">⚙️</span>
+                    <span>Reasoning about code topology & refactoring strategies...</span>
+                  </div>
+                {:else if analysis.content}
+                  <div class="comark-rendered-container prose dark:prose-invert max-w-none text-xs leading-relaxed max-h-96 overflow-y-auto select-text p-2 rounded bg-[var(--vscode-editor-background)] border border-[var(--vscode-widget-border,#252526)]">
+                    <Markdown value={analysis.content} streaming={analysis.isAnalyzing} />
+                  </div>
+                {/if}
+              {/if}
+            </div>
+          {/if}
         </div>
       {/each}
     {:else if isAnalyzing}

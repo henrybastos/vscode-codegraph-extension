@@ -197,3 +197,90 @@ export async function disposeLocalLlama(): Promise<void> {
     currentModelPath = null;
   }
 }
+
+export interface FileAnalysisContext {
+  path: string;
+  category?: string;
+  description?: string;
+  loc?: number;
+  fanIn?: number;
+  fanOut?: number;
+  instability?: number;
+  symbols?: string[];
+  dependencies?: string[];
+  dependents?: string[];
+  sourceCodeSnippet?: string;
+}
+
+export async function runLocalFileAnalysis(
+  modelPath: string,
+  contextData: FileAnalysisContext,
+  onChunk: (chunk: string) => void,
+  signal?: AbortSignal
+): Promise<string> {
+  const { getLlama, LlamaChatSession } = await getLlamaModule();
+
+  if (!llamaInstance) {
+    llamaInstance = await getLlama();
+  }
+
+  if (!loadedModel || currentModelPath !== modelPath) {
+    if (loadedModel) {
+      try {
+        await loadedModel.dispose();
+      } catch {}
+      loadedModel = null;
+    }
+    loadedModel = await llamaInstance.loadModel({ modelPath });
+    currentModelPath = modelPath;
+  }
+
+  const context = await loadedModel.createContext({
+    contextSize: 2048
+  });
+
+  try {
+    const systemPrompt = `You are a Principal Software Architect and Refactoring Specialist.
+You analyze architectural code metrics and structural concerns, providing sharp, concrete refactoring guidance.
+Format your review in clean Markdown with:
+1. 🔍 **Diagnosis & Smells** (Identify the primary architectural liability)
+2. 🛠️ **Step-by-Step Refactoring Plan** (How to decouple, extract, or simplify)
+3. 💡 **Target Architecture Proposal** (Suggested interfaces, split modules, or design patterns)`;
+
+    const session = new LlamaChatSession({
+      contextSequence: context.getSequence(),
+      systemPrompt
+    });
+
+    const userPrompt = `Conduct an architectural code review and refactoring proposal for this file:
+
+Target: ${contextData.path}
+Identified Concern: ${contextData.category || 'Architectural Hotspot'}
+Description: ${contextData.description || 'N/A'}
+Metrics: LOC: ${contextData.loc ?? 'N/A'}, Fan-In: ${contextData.fanIn ?? 'N/A'}, Fan-Out: ${contextData.fanOut ?? 'N/A'}, Instability: ${contextData.instability ?? 'N/A'}
+Key Symbols: ${contextData.symbols && contextData.symbols.length > 0 ? contextData.symbols.join(', ') : 'None'}
+Dependencies (Callees): ${contextData.dependencies && contextData.dependencies.length > 0 ? contextData.dependencies.join(', ') : 'None'}
+Dependents (Callers): ${contextData.dependents && contextData.dependents.length > 0 ? contextData.dependents.join(', ') : 'None'}
+
+${contextData.sourceCodeSnippet ? `Source Code Preview:\n\`\`\`typescript\n${contextData.sourceCodeSnippet}\n\`\`\`` : ''}
+
+Provide your concrete evaluation and refactoring guide.`;
+
+    let fullText = '';
+    await session.prompt(userPrompt, {
+      maxTokens: 800,
+      temperature: 0.2,
+      signal,
+      onTextChunk(chunk: any) {
+        fullText += chunk;
+        onChunk(chunk);
+      }
+    });
+
+    return fullText;
+  } finally {
+    try {
+      await context.dispose();
+    } catch {}
+  }
+}
