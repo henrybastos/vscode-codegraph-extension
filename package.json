@@ -1,0 +1,97 @@
+{
+  "name": "vscode-codegraph-rag",
+  "displayName": "CodeGraph RAG & Architecture Intelligence",
+  "description": "Codebase structural graph, lexical FTS5 search, coupling metrics, and OpenRouter AI architectural audits.",
+  "version": "0.1.0",
+  "publisher": "antigravity",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Visualization",
+    "Linters",
+    "Machine Learning"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "*",
+    "onStartupFinished",
+    "onView:codegraph.sidebarView"
+  ],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "codegraph-explorer",
+          "title": "CodeGraph RAG",
+          "icon": "$(type-hierarchy)"
+        }
+      ]
+    },
+    "views": {
+      "codegraph-explorer": [
+        {
+          "type": "webview",
+          "id": "codegraph.sidebarView",
+          "name": "CodeGraph Explorer"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "codegraph.indexWorkspace",
+        "title": "CodeGraph: Re-index Workspace",
+        "category": "CodeGraph"
+      },
+      {
+        "command": "codegraph.openPanel",
+        "title": "CodeGraph: Open Graph Explorer Panel",
+        "category": "CodeGraph"
+      },
+      {
+        "command": "codegraph.setApiKey",
+        "title": "CodeGraph: Set OpenRouter API Key",
+        "category": "CodeGraph"
+      }
+    ],
+    "configuration": {
+      "title": "CodeGraph RAG",
+      "properties": {
+        "codegraph.openRouterModel": {
+          "type": "string",
+          "default": "google/gemma-4-31b-it:free",
+          "description": "OpenRouter model identifier for architectural reviews (e.g. google/gemma-4-31b-it:free, cohere/north-mini-code:free, nvidia/nemotron-3.5-lightning:free)."
+        },
+        "codegraph.maxTraversalDepth": {
+          "type": "number",
+          "default": 2,
+          "description": "Maximum BFS hops for neighborhood subgraph extraction."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "pnpm run build",
+    "build:extension": "node esbuild.config.mjs",
+    "build:webview": "pnpm --filter codegraph-webview build",
+    "build": "pnpm run build:webview; pnpm run build:extension",
+    "watch:extension": "node esbuild.config.mjs --watch",
+    "test": "node --test dist/test/pipeline.test.js",
+    "typecheck": "tsc --noEmit; pnpm --filter codegraph-webview check"
+  },
+  "dependencies": {
+    "graphology": "^0.25.4",
+    "graphology-types": "^0.24.8",
+    "kysely": "^0.27.6",
+    "web-tree-sitter": "^0.24.7"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.10",
+    "@types/vscode": "^1.90.0",
+    "esbuild": "^0.25.0",
+    "tree-sitter-javascript": "^0.23.1",
+    "tree-sitter-typescript": "^0.23.2",
+    "typescript": "^5.8.2"
+  }
+}
