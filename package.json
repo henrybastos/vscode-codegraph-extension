@@ -75,15 +75,22 @@
     "vscode:prepublish": "pnpm run build",
     "build:extension": "node esbuild.config.mjs",
     "build:webview": "pnpm --filter codegraph-webview build",
+    "watch:webview": "pnpm --filter codegraph-webview watch",
     "build": "pnpm run build:webview; pnpm run build:extension",
     "watch:extension": "node esbuild.config.mjs --watch",
+    "watch": "node esbuild.config.mjs --watch & pnpm --filter codegraph-webview watch",
     "test": "node --test dist/test/pipeline.test.js",
     "typecheck": "tsc --noEmit; pnpm --filter codegraph-webview check"
   },
   "dependencies": {
     "graphology": "^0.25.4",
+    "graphology-communities-louvain": "^2.0.2",
+    "graphology-dag": "^0.4.1",
+    "graphology-metrics": "^2.4.2",
+    "graphology-shortest-path": "^2.1.0",
     "graphology-types": "^0.24.8",
     "kysely": "^0.27.6",
+    "node-llama-cpp": "^3.22.3",
     "web-tree-sitter": "^0.24.7"
   },
   "devDependencies": {

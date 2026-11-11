@@ -7,6 +7,7 @@ const isWatch = process.argv.includes('--watch');
 // Ensure dist and grammars directories exist
 const distDir = path.resolve('dist');
 const grammarsDir = path.resolve('dist/grammars');
+
 if (!fs.existsSync(grammarsDir)) {
   fs.mkdirSync(grammarsDir, { recursive: true });
 }
@@ -18,14 +19,14 @@ if (fs.existsSync('src/storage/schema.sql')) {
 }
 
 // Copy wasm grammars directly
-const wasmFiles = [
+const wasmGrammars = [
   { src: 'node_modules/web-tree-sitter/tree-sitter.wasm', dest: 'tree-sitter.wasm' },
   { src: 'node_modules/tree-sitter-typescript/tree-sitter-typescript.wasm', dest: 'tree-sitter-typescript.wasm' },
   { src: 'node_modules/tree-sitter-typescript/tree-sitter-tsx.wasm', dest: 'tree-sitter-tsx.wasm' },
   { src: 'node_modules/tree-sitter-javascript/tree-sitter-javascript.wasm', dest: 'tree-sitter-javascript.wasm' }
 ];
 
-for (const { src, dest } of wasmFiles) {
+for (const { src, dest } of wasmGrammars) {
   if (fs.existsSync(src)) {
     fs.copyFileSync(src, path.join(grammarsDir, dest));
     console.log(`Copied ${dest} to dist/grammars/`);
@@ -44,7 +45,7 @@ const buildOpts = {
   platform: 'node',
   target: 'node22',
   outfile: 'dist/extension.js',
-  external: ['vscode', 'node:sqlite'],
+  external: ['vscode', 'node:sqlite', 'node-llama-cpp'],
   sourcemap: true,
   logLevel: 'info'
 };

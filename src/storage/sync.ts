@@ -4,7 +4,7 @@ import type { DatabaseSchema } from './types.js';
 export interface ParsedSymbol {
   id: string;
   name: string;
-  kind: 'function' | 'class' | 'interface' | 'endpoint' | 'variable' | 'type';
+  kind: 'function' | 'class' | 'interface' | 'endpoint' | 'variable' | 'type' | 'file';
   signature?: string;
   summary?: string;
   startLine: number;

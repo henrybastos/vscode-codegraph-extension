@@ -1,17 +1,49 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import SearchBar from './components/SearchBar.svelte';
   import AdvicePanel from './components/AdvicePanel.svelte';
+  import Hotspots, { type HotspotItem, type AnalysisStats } from './components/Hotspots.svelte';
 
   const vscode = acquireVsCodeApi();
 
   let query = $state('');
   let isAnalyzing = $state(false);
+  let hotspots = $state<HotspotItem[]>([]);
+  let stats = $state<AnalysisStats | null>(null);
+  let statusMessage = $state('');
   let aiAdvice = $state('');
   let auditMode = $state<'structure' | 'symbol' | null>(null);
   let analysisStats = $state<{ directories: number; files: number } | null>(null);
 
+  let modelStatus = $state<{ isDownloaded: boolean; sizeMb: number }>({ isDownloaded: false, sizeMb: 0 });
+  let downloadProgress = $state<{ pct: number; loadedMb: number; totalMb: number } | null>(null);
+  let analysisError = $state<string>('');
+  let isDownloadingModel = $state(false);
+
+  onMount(() => {
+    vscode.postMessage({ command: 'get_model_status' });
+  });
+
   function handleSearch(q: string) {
     vscode.postMessage({ command: 'search', query: q });
+  }
+
+  function handleAnalyzeProjectLocal() {
+    isAnalyzing = true;
+    analysisError = '';
+    statusMessage = 'Starting local analysis...';
+    vscode.postMessage({ command: 'analyse_project_local' });
+  }
+
+  function handleDownloadModel() {
+    isDownloadingModel = true;
+    analysisError = '';
+    vscode.postMessage({ command: 'download_model' });
+  }
+
+  function handleDeleteModel() {
+    analysisError = '';
+    vscode.postMessage({ command: 'delete_model' });
   }
 
   function handleAnalyzeProjectStructure() {
@@ -34,9 +66,44 @@
     vscode.postMessage({ command: 'set_api_key' });
   }
 
-  window.addEventListener('message', (event) => {
+  window.addEventListener('message', async (event) => {
     const { type, payload } = event.data;
-    if (type === 'ai_start') {
+    if (type === 'model_status') {
+      modelStatus = payload || { isDownloaded: false, sizeMb: 0 };
+      isDownloadingModel = false;
+      downloadProgress = null;
+    } else if (type === 'model_download_progress') {
+      downloadProgress = payload;
+      isDownloadingModel = true;
+    } else if (type === 'model_download_error') {
+      isDownloadingModel = false;
+      downloadProgress = null;
+      analysisError = `Download failed: ${payload}`;
+    } else if (type === 'analysis_status') {
+      statusMessage = payload?.message || 'Processing...';
+    } else if (type === 'hotspots_result') {
+      isAnalyzing = false;
+      statusMessage = '';
+      if (Array.isArray(payload)) {
+        hotspots = payload;
+      } else {
+        hotspots = payload.hotspots || [];
+        stats = payload.stats || null;
+      }
+    } else if (type === 'hotspots_error') {
+      isAnalyzing = false;
+      analysisError = payload || 'Local architecture analysis failed';
+      statusMessage = '';
+    } else if (type === 'index_complete') {
+      if (payload) {
+        stats = {
+          fileCount: payload.indexedCount,
+          folderCount: 0,
+          symbolCount: payload.totalSymbols,
+          durationMs: 0
+        };
+      }
+    } else if (type === 'ai_start') {
       isAnalyzing = true;
       aiAdvice = '';
       auditMode = payload?.mode || 'structure';
@@ -66,25 +133,35 @@
     <!-- Action Bar -->
     <div class="p-2 border-b border-[var(--vscode-panel-border)] bg-[var(--vscode-editor-background)] flex items-center justify-between gap-2">
       <button
-        onclick={handleAnalyzeProjectStructure}
-        disabled={isAnalyzing}
-        class="flex-1 px-3 py-1.5 text-xs font-semibold rounded bg-[var(--vscode-button-background)] text-[var(--vscode-button-foreground)] hover:bg-[var(--vscode-button-hoverBackground)] disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer flex items-center justify-center gap-1.5 transition-all shadow-sm"
-        title="Scan project directory structure and run AI architectural review"
+        onclick={handleAnalyzeProjectLocal}
+        disabled={isAnalyzing || isDownloadingModel}
+        class="text-zinc-50 text-xs px-3 py-2 h-fit w-full mb-auto rounded bg-zinc-400/30 hover:bg-zinc-400/40 disabled:opacity-50 transition-colors leading-none cursor-pointer flex items-center justify-center gap-2"
+        title="Analyse Project (WASM + Qwen 2.5 Coder)"
       >
-        <span>📁</span>
-        <span>{isAnalyzing ? 'Analyzing project...' : 'Analyse Project Structure'}</span>
+        {#if isAnalyzing}
+          <span class="inline-block animate-spin">⚙️</span>
+          <span>Analysing Project (Qwen 2.5 Coder)...</span>
+        {:else if isDownloadingModel}
+          <span class="inline-block animate-spin">⬇️</span>
+          <span>Downloading Model ({downloadProgress?.pct ?? 0}%)...</span>
+        {:else}
+          <span>Analyse Project</span>
+        {/if}
       </button>
     </div>
 
-    <!-- AI Architecture Output (Comark Markdown) -->
-    <AdvicePanel
+    <Hotspots
+      {hotspots}
       {isAnalyzing}
-      {aiAdvice}
-      mode={auditMode}
-      focalName={null}
-      stats={analysisStats}
-      onRunAnalysis={handleAnalyzeProjectStructure}
-      onAbortAnalysis={handleAbortAnalysis}
+      {stats}
+      {statusMessage}
+      {modelStatus}
+      {downloadProgress}
+      {analysisError}
+      {isDownloadingModel}
+      onDownloadModel={handleDownloadModel}
+      onDeleteModel={handleDeleteModel}
+      onRetry={handleAnalyzeProjectLocal}
     />
   </div>
 </main>

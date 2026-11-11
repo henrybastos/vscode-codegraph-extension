@@ -87,6 +87,17 @@ export function parseFileAst(
   const symbolMap = new Map<string, ParsedSymbol>();
   const importMap = new Map<string, string>(); // imported identifier -> module / source specifier
 
+  // Add file-level module symbol
+  const lineCount = sourceCode.split('\n').length;
+  symbols.push({
+    id: filePath,
+    name: path.basename(filePath),
+    kind: 'file',
+    signature: filePath,
+    startLine: 1,
+    endLine: lineCount
+  });
+
   // First pass: Traverse AST and extract imports, functions, classes, interfaces, types
   function traverse(node: Parser.SyntaxNode, currentParentSymbol?: ParsedSymbol) {
     const type = node.type;
@@ -95,6 +106,16 @@ export function parseFileAst(
     if (type === 'import_statement') {
       const sourceNode = node.childForFieldName('source');
       const moduleSpecifier = sourceNode ? sourceNode.text.replace(/['"]/g, '') : '';
+      if (moduleSpecifier) {
+        const resolvedModule = resolveImportPath(moduleSpecifier, filePath);
+        if (resolvedModule && !resolvedModule.startsWith('package:')) {
+          edges.push({
+            sourceId: filePath,
+            targetId: resolvedModule,
+            relation: 'IMPORTS'
+          });
+        }
+      }
       for (const child of node.namedChildren) {
         if (child.type === 'import_clause') {
           for (const spec of child.namedChildren) {
@@ -114,6 +135,23 @@ export function parseFileAst(
         }
       }
       return;
+    }
+
+    // Handle re-exports: export { x } from './module'
+    if (type === 'export_statement') {
+      const sourceNode = node.childForFieldName('source');
+      if (sourceNode) {
+        const moduleSpecifier = sourceNode.text.replace(/['"]/g, '');
+        const resolvedModule = resolveImportPath(moduleSpecifier, filePath);
+        if (resolvedModule && !resolvedModule.startsWith('package:')) {
+          edges.push({
+            sourceId: filePath,
+            targetId: resolvedModule,
+            relation: 'IMPORTS'
+          });
+        }
+        return;
+      }
     }
 
     let detectedSymbol: ParsedSymbol | null = null;
@@ -279,6 +317,22 @@ function extractSignature(node: Parser.SyntaxNode, sourceCode: string, fallbackN
   return `${name}${paramText}${retText}`;
 }
 
+export function resolveImportPath(moduleSpecifier: string, currentFilePath: string): string {
+  let spec = moduleSpecifier.trim().replace(/^['"]|['"]$/g, '');
+  if (spec.startsWith('.')) {
+    const dir = path.posix.dirname(currentFilePath.replace(/\\/g, '/'));
+    let combined = path.posix.normalize(path.posix.join(dir, spec));
+    combined = combined.replace(/\.(js|jsx)$/, '');
+    return combined;
+  }
+  if (spec.startsWith('@/')) {
+    let combined = 'src/' + spec.slice(2);
+    combined = combined.replace(/\.(js|jsx)$/, '');
+    return combined;
+  }
+  return `package:${spec}`;
+}
+
 function resolveTargetId(
   targetName: string,
   currentFilePath: string,
@@ -286,12 +340,7 @@ function resolveTargetId(
 ): string {
   const importedModule = importMap.get(targetName);
   if (importedModule) {
-    // Relative import resolution helper
-    let resolvedModule = importedModule;
-    if (importedModule.startsWith('.')) {
-      const dir = path.dirname(currentFilePath);
-      resolvedModule = path.posix.normalize(path.posix.join(dir.replace(/\\/g, '/'), importedModule));
-    }
+    const resolvedModule = resolveImportPath(importedModule, currentFilePath);
     return `${resolvedModule}::${targetName}`;
   }
   return `${currentFilePath}::${targetName}`;

@@ -3,7 +3,7 @@ import * as path from 'node:path';
 import { initSqliteDb } from './storage/db.js';
 import { CodeGraphCache } from './graph/graph-manager.js';
 import { initTreeSitter } from './parser/treesitter.js';
-import { WorkspaceIndexer } from './parser/watcher.js';
+import { WorkspaceIndexer, isIgnoredPath, purgeIgnoredFiles } from './parser/watcher.js';
 import { OpenRouterClient } from './ai/openrouter.js';
 import { CodeGraphWebviewProvider } from './webview/provider.js';
 
@@ -24,6 +24,7 @@ export async function activate(context: vscode.ExtensionContext) {
   console.log('[CodeGraph] Hydrating Graphology cache...');
   const graphCache = new CodeGraphCache();
   await graphCache.hydrate(db);
+  await purgeIgnoredFiles(db, graphCache);
 
   // 3. Initialize Tree-sitter WASM
   console.log('[CodeGraph] Initializing Tree-sitter WASM...');
@@ -54,7 +55,7 @@ export async function activate(context: vscode.ExtensionContext) {
         const root = folders[0].uri.fsPath;
         const files = await vscode.workspace.findFiles(
           '**/*.{ts,tsx,js,jsx,mjs,cjs}',
-          '**/{node_modules,dist,build,.git,coverage}/**'
+          '**/{node_modules,dist,build,out,.next,.nuxt,.turbo,.output,.svelte-kit,.git,coverage,.cache,tmp,temp}/**'
         );
 
         console.log(`[CodeGraph] Found ${files.length} candidate files in workspace ${root}`);
@@ -63,6 +64,8 @@ export async function activate(context: vscode.ExtensionContext) {
 
         for (let i = 0; i < files.length; i++) {
           const fileUri = files[i];
+          if (isIgnoredPath(fileUri.fsPath)) continue;
+
           progress.report({
             message: `${path.basename(fileUri.fsPath)} (${i + 1}/${files.length})`,
             increment: (1 / files.length) * 100
@@ -79,6 +82,7 @@ export async function activate(context: vscode.ExtensionContext) {
         vscode.window.showInformationMessage(
           `CodeGraph: Indexed ${indexedCount} files (${totalSymbols} symbols).`
         );
+        provider?.notifyIndexComplete(indexedCount, totalSymbols, files.length);
         provider?.notifyGraphUpdated();
       }
     );
@@ -87,6 +91,7 @@ export async function activate(context: vscode.ExtensionContext) {
   // 6. Register Webview View Provider
   provider = new CodeGraphWebviewProvider(
     context.extensionUri,
+    context.globalStorageUri.fsPath,
     db,
     graphCache,
     aiClient,
@@ -147,6 +152,7 @@ export async function activate(context: vscode.ExtensionContext) {
   const watcher = vscode.workspace.createFileSystemWatcher('**/*.{ts,tsx,js,jsx,mjs,cjs}');
 
   watcher.onDidChange((uri) => {
+    if (isIgnoredPath(uri.fsPath)) return;
     const folders = vscode.workspace.workspaceFolders;
     if (folders && folders.length > 0) {
       indexer!.scheduleFileUpdate(uri.fsPath, folders[0].uri.fsPath, () => {
@@ -156,6 +162,7 @@ export async function activate(context: vscode.ExtensionContext) {
   });
 
   watcher.onDidCreate((uri) => {
+    if (isIgnoredPath(uri.fsPath)) return;
     const folders = vscode.workspace.workspaceFolders;
     if (folders && folders.length > 0) {
       indexer!.scheduleFileUpdate(uri.fsPath, folders[0].uri.fsPath, () => {
@@ -165,6 +172,7 @@ export async function activate(context: vscode.ExtensionContext) {
   });
 
   watcher.onDidDelete((uri) => {
+    if (isIgnoredPath(uri.fsPath)) return;
     const folders = vscode.workspace.workspaceFolders;
     if (folders && folders.length > 0) {
       indexer!.scheduleFileUpdate(uri.fsPath, folders[0].uri.fsPath, () => {

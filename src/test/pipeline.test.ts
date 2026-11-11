@@ -10,6 +10,9 @@ import { initTreeSitter, parseFileAst } from '../parser/treesitter.js';
 import { OpenRouterClient } from '../ai/openrouter.js';
 import { generateProjectFileTree, extractProjectMetadata } from '../ai/structure-scanner.js';
 import { buildProjectStructurePrompt } from '../ai/prompts.js';
+import { buildFileGraph, runTier0Assertions } from '../graph/assertions.js';
+import { LocalGGUFModelManager } from '../models/model-manager.js';
+import { DirectedGraph } from 'graphology';
 
 test('1. SQLite & Kysely initialization and FTS5 triggers', async () => {
   const tmpDir = path.resolve('dist/test_storage');
@@ -167,4 +170,50 @@ test('5. Project File Structure Scanner & Prompt Generation', () => {
   const prompt = buildProjectStructurePrompt(tree, meta);
   assert.ok(prompt.system.includes('Software Architect'));
   assert.ok(prompt.user.includes(meta));
+});
+
+test('6. Tier 0 Graphology Assertions (Cycles, Layer Bypass, SDP)', () => {
+  const g = new DirectedGraph();
+
+  // Create mock files
+  g.addNode('src/components/View.tsx', { filePath: 'src/components/View.tsx', endLine: 120, kind: 'file' });
+  g.addNode('src/storage/db.ts', { filePath: 'src/storage/db.ts', endLine: 80, kind: 'file' });
+  g.addNode('src/core/stable.ts', { filePath: 'src/core/stable.ts', endLine: 200, kind: 'file' });
+  g.addNode('src/volatile.ts', { filePath: 'src/volatile.ts', endLine: 50, kind: 'file' });
+  g.addNode('a.ts', { filePath: 'a.ts', endLine: 50, kind: 'file' });
+  g.addNode('b.ts', { filePath: 'b.ts', endLine: 50, kind: 'file' });
+
+  // 1. Layer bypass edge: presentation -> infrastructure
+  g.addEdge('src/components/View.tsx', 'src/storage/db.ts', { relation: 'IMPORTS' });
+
+  // 2. Circular dependency: a -> b -> a
+  g.addEdge('a.ts', 'b.ts', { relation: 'IMPORTS' });
+  g.addEdge('b.ts', 'a.ts', { relation: 'IMPORTS' });
+
+  const fileGraph = buildFileGraph(g);
+  const tier0 = runTier0Assertions(fileGraph);
+
+  const categories = tier0.deterministicHotspots.map(h => h.category);
+  assert.ok(categories.includes('Circular Dependency'), 'Should detect Circular Dependency');
+  assert.ok(categories.includes('Layer Bypass'), 'Should detect Layer Bypass');
+  assert.ok(tier0.fileFeatureVectors.size > 0, 'Should generate file feature vectors');
+  assert.ok(tier0.folderFeatureVectors.size > 0, 'Should generate folder feature vectors');
+});
+
+test('7. Local GGUF Model Manager & Path Resolution', async () => {
+  const tmpDir = path.resolve('dist/test_storage');
+  if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
+
+  const modelPath = LocalGGUFModelManager.getModelPath(tmpDir);
+  assert.ok(modelPath.endsWith('qwen2.5-coder-0.5b-instruct-q4_k_m.gguf'), 'Should match expected GGUF filename');
+
+  const isDownloaded = LocalGGUFModelManager.isModelDownloaded(tmpDir);
+  assert.strictEqual(isDownloaded, false, 'Model should not be marked as downloaded initially');
+
+  const sizeMb = LocalGGUFModelManager.getModelSizeMb(tmpDir);
+  assert.strictEqual(sizeMb, 0);
+
+  // Test deletion of non-existent model (graceful)
+  const deleted = await LocalGGUFModelManager.deleteModel(tmpDir);
+  assert.strictEqual(deleted, false);
 });

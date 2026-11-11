@@ -77,9 +77,11 @@ export class CodeGraphCache {
   }
 
   removeFileNodes(filePath: string): void {
+    const targetNorm = filePath.replace(/\\/g, '/').replace(/^\/+/, '').toLowerCase();
     const toDrop: string[] = [];
     this.graph.forEachNode((nodeId, attrs) => {
-      if ((attrs as GraphNodeAttrs).filePath === filePath) {
+      const nodePath = (attrs as GraphNodeAttrs).filePath?.replace(/\\/g, '/').replace(/^\/+/, '').toLowerCase();
+      if (nodePath === targetNorm) {
         toDrop.push(nodeId);
       }
     });

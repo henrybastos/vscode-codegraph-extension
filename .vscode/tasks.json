@@ -7,6 +7,13 @@
       "group": "build",
       "problemMatcher": ["$esbuild"],
       "label": "npm: build"
+    },
+    {
+      "type": "npm",
+      "script": "watch:webview",
+      "isBackground": true,
+      "problemMatcher": [],
+      "label": "npm: watch:webview"
     }
   ]
 }

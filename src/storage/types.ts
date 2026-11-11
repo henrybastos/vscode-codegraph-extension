@@ -10,7 +10,7 @@ export interface NodesTable {
   id: string; // e.g. "src/auth/service.ts::validateToken"
   file_path: string;
   name: string;
-  kind: 'function' | 'class' | 'interface' | 'endpoint' | 'variable' | 'type';
+  kind: 'function' | 'class' | 'interface' | 'endpoint' | 'variable' | 'type' | 'file';
   signature: string | null;
   summary: string | null;
   start_line: number;
