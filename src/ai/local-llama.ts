@@ -50,6 +50,15 @@ const HOTSPOT_JSON_SCHEMA = {
   required: ['classifications']
 } as const;
 
+const SLM_VALIDATION_SCHEMA = {
+  type: 'object',
+  properties: {
+    isViolation: { type: 'boolean' },
+    reason: { type: 'string' }
+  },
+  required: ['isViolation', 'reason']
+} as const;
+
 export async function runLocalLlamaInference(
   modelPath: string,
   deterministicHotspots: HotspotItem[],
@@ -188,6 +197,84 @@ Output the classifications array adhering to the schema.`;
   return deduplicated;
 }
 
+export async function validateCandidatesWithLlama(
+  modelPath: string,
+  candidatesWithPrompts: Array<{ candidate: any; prompt: string }>,
+  onStatus?: (msg: string) => void
+): Promise<Map<string, { isViolation: boolean; reason?: string }>> {
+  const results = new Map<string, { isViolation: boolean; reason?: string }>();
+  if (candidatesWithPrompts.length === 0) return results;
+
+  const { getLlama, LlamaChatSession, LlamaJsonSchemaGrammar } = await getLlamaModule();
+
+  if (!llamaInstance) {
+    if (onStatus) onStatus('Step 3/3: Initializing native llama.cpp runtime...');
+    llamaInstance = await getLlama();
+  }
+
+  if (!loadedModel || currentModelPath !== modelPath) {
+    if (onStatus) onStatus('Step 3/3: Memory-mapping Qwen 2.5 Coder GGUF...');
+    if (loadedModel) {
+      try {
+        await loadedModel.dispose();
+      } catch {}
+      loadedModel = null;
+    }
+    loadedModel = await llamaInstance.loadModel({ modelPath });
+    currentModelPath = modelPath;
+  }
+
+  const context = await loadedModel.createContext({ contextSize: 2048 });
+
+  try {
+    const grammar = new LlamaJsonSchemaGrammar(llamaInstance, SLM_VALIDATION_SCHEMA as any);
+
+    const systemPrompt = `You are a strict, senior software architect reviewing candidate architecture violations.
+Carefully decide if the situation is a true architectural violation or a valid design choice.
+Respond strictly in JSON matching the schema: {"isViolation": boolean, "reason": string}.`;
+
+    const batch = candidatesWithPrompts.slice(0, 5);
+    let index = 0;
+
+    for (const item of batch) {
+      index++;
+      const baseName = item.candidate.path ? item.candidate.path.split(/[/\\\\]/).pop() : 'candidate';
+      if (onStatus) {
+        onStatus(`Step 3/3: Validating candidate ${index}/${batch.length} (${baseName})...`);
+      }
+
+      const session = new LlamaChatSession({
+        contextSequence: context.getSequence(),
+        systemPrompt
+      });
+
+      const userPrompt = `${item.prompt}\n\nIs this a real architectural violation? Output JSON with isViolation and reason.`;
+
+      try {
+        const rawResponse = await session.prompt(userPrompt, {
+          grammar,
+          maxTokens: 120,
+          temperature: 0.1
+        });
+        const parsed = JSON.parse(rawResponse);
+        results.set(item.candidate.id, {
+          isViolation: Boolean(parsed.isViolation),
+          reason: typeof parsed.reason === 'string' ? parsed.reason : undefined
+        });
+      } catch (err) {
+        console.warn('[validateCandidatesWithLlama] Failed to validate item:', item.candidate.id, err);
+        results.set(item.candidate.id, { isViolation: true });
+      }
+    }
+  } finally {
+    try {
+      await context.dispose();
+    } catch {}
+  }
+
+  return results;
+}
+
 export async function disposeLocalLlama(): Promise<void> {
   if (loadedModel) {
     try {
@@ -200,6 +287,8 @@ export async function disposeLocalLlama(): Promise<void> {
 
 export interface FileAnalysisContext {
   path: string;
+  isFolder?: boolean;
+  fileList?: string[];
   category?: string;
   description?: string;
   loc?: number;
@@ -241,7 +330,13 @@ export async function runLocalFileAnalysis(
 
   try {
     const systemPrompt = `You are a Principal Software Architect and Refactoring Specialist.
-You analyze architectural code metrics and structural concerns, providing sharp, concrete refactoring guidance.
+You analyze architectural code metrics and structural concerns in TypeScript/JavaScript projects, providing sharp, concrete refactoring guidance.
+
+CRITICAL INSTRUCTIONS:
+- Analyze the real files, classes, functions, and architectural layers described in the context.
+- Static analysis metrics (e.g. "dependency clusters", "graph communities", "fan-in/fan-out", "instability") are mathematical measurements of the dependency graph; they are NOT domain classes or features in the user's project. Never invent or propose classes, interfaces, or modules named "GraphCommunity" or graph data structures.
+- Focus exclusively on the real domain concepts (e.g. users, authentication, orders, use cases) present in the actual files.
+
 Format your review in clean Markdown with:
 1. 🔍 **Diagnosis & Smells** (Identify the primary architectural liability)
 2. 🛠️ **Step-by-Step Refactoring Plan** (How to decouple, extract, or simplify)
@@ -252,17 +347,18 @@ Format your review in clean Markdown with:
       systemPrompt
     });
 
-    const userPrompt = `Conduct an architectural code review and refactoring proposal for this file:
+    const targetType = contextData.isFolder ? 'Directory / Module' : 'File';
+    const userPrompt = `Conduct an architectural code review and refactoring proposal for this ${targetType.toLowerCase()}:
 
-Target: ${contextData.path}
-Identified Concern: ${contextData.category || 'Architectural Hotspot'}
+Target: ${contextData.path} (${targetType})
+${contextData.isFolder && contextData.fileList && contextData.fileList.length > 0 ? `Files in Directory (${contextData.fileList.length}): ${contextData.fileList.join(', ')}\n` : ''}Identified Concern: ${contextData.category || 'Architectural Hotspot'}
 Description: ${contextData.description || 'N/A'}
-Metrics: LOC: ${contextData.loc ?? 'N/A'}, Fan-In: ${contextData.fanIn ?? 'N/A'}, Fan-Out: ${contextData.fanOut ?? 'N/A'}, Instability: ${contextData.instability ?? 'N/A'}
-Key Symbols: ${contextData.symbols && contextData.symbols.length > 0 ? contextData.symbols.join(', ') : 'None'}
-Dependencies (Callees): ${contextData.dependencies && contextData.dependencies.length > 0 ? contextData.dependencies.join(', ') : 'None'}
-Dependents (Callers): ${contextData.dependents && contextData.dependents.length > 0 ? contextData.dependents.join(', ') : 'None'}
+Metrics: ${contextData.isFolder ? `File Count: ${contextData.loc ?? 'N/A'}` : `LOC: ${contextData.loc ?? 'N/A'}`}, Fan-In: ${contextData.fanIn ?? 'N/A'}, Fan-Out: ${contextData.fanOut ?? 'N/A'}, Instability: ${contextData.instability ?? 'N/A'}
+Key Symbols: ${contextData.symbols && contextData.symbols.length > 0 ? contextData.symbols.slice(0, 15).join(', ') : 'None'}
+Dependencies (Callees): ${contextData.dependencies && contextData.dependencies.length > 0 ? contextData.dependencies.slice(0, 8).join(', ') : 'None'}
+Dependents (Callers): ${contextData.dependents && contextData.dependents.length > 0 ? contextData.dependents.slice(0, 8).join(', ') : 'None'}
 
-${contextData.sourceCodeSnippet ? `Source Code Preview:\n\`\`\`typescript\n${contextData.sourceCodeSnippet}\n\`\`\`` : ''}
+${contextData.sourceCodeSnippet ? `${contextData.isFolder ? 'Directory Manifest & File Overview' : 'Source Code Preview'}:\n\`\`\`${contextData.isFolder ? 'text' : 'typescript'}\n${contextData.sourceCodeSnippet}\n\`\`\`` : ''}
 
 Provide your concrete evaluation and refactoring guide.`;
 

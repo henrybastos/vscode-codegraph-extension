@@ -19,10 +19,12 @@ export interface HotspotItem {
     | 'God File'
     | 'Circular Dependency'
     | 'Layer Bypass'
+    | 'Mixed Concerns'
     | 'Unstable Foundation'
     | 'Bottleneck Hub'
     | 'Domain Tangling'
     | 'Feature Envy'
+    | 'Dead Abstraction'
     | 'Architecture Tip';
   severity: 'critical' | 'high' | 'medium' | 'info';
   title: string;
@@ -160,11 +162,22 @@ export function buildFileGraph(symbolGraph: DirectedGraph): DirectedGraph {
       tgtFile = tgtFile.replace(/\\/g, '/');
       if (isIgnoredPath(srcFile) || isIgnoredPath(tgtFile)) return;
       if (srcFile !== tgtFile && fileGraph.hasNode(srcFile) && fileGraph.hasNode(tgtFile)) {
+        const isType = edgeAttrs?.relation === 'IMPORTS_TYPE';
+        const isReExport = edgeAttrs?.relation === 'RE_EXPORTS';
         if (!fileGraph.hasEdge(srcFile, tgtFile)) {
-          fileGraph.addEdge(srcFile, tgtFile, { weight: 1 });
+          fileGraph.addEdge(srcFile, tgtFile, {
+            weight: 1,
+            isTypeOnly: isType,
+            isReExport: isReExport
+          });
         } else {
           const w = (fileGraph.getEdgeAttribute(srcFile, tgtFile, 'weight') || 1) + 1;
+          const prevType = fileGraph.getEdgeAttribute(srcFile, tgtFile, 'isTypeOnly') ?? true;
           fileGraph.setEdgeAttribute(srcFile, tgtFile, 'weight', w);
+          fileGraph.setEdgeAttribute(srcFile, tgtFile, 'isTypeOnly', prevType && isType);
+          if (isReExport) {
+            fileGraph.setEdgeAttribute(srcFile, tgtFile, 'isReExport', true);
+          }
         }
       }
     }

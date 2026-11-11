@@ -12,6 +12,17 @@ import { generateProjectFileTree, extractProjectMetadata } from '../ai/structure
 import { buildProjectStructurePrompt } from '../ai/prompts.js';
 import { buildFileGraph, runTier0Assertions } from '../graph/assertions.js';
 import { LocalGGUFModelManager } from '../models/model-manager.js';
+import {
+  DEFAULT_RULES,
+  runRuleEngine,
+  GodFileRule,
+  CircularCouplingRule,
+  LayerBypassRule,
+  MixedConcernsRule,
+  UnstableFoundationRule,
+  FeatureEnvyRule,
+  DeadAbstractionRule
+} from '../rules/index.js';
 import { DirectedGraph } from 'graphology';
 
 test('1. SQLite & Kysely initialization and FTS5 triggers', async () => {
@@ -217,3 +228,128 @@ test('7. Local GGUF Model Manager & Path Resolution', async () => {
   const deleted = await LocalGGUFModelManager.deleteModel(tmpDir);
   assert.strictEqual(deleted, false);
 });
+
+test('8. Modular 7-Rule Plugin Catalog & Deterministic Ignore Filters', () => {
+  const fileGraph = new DirectedGraph();
+  const symbolGraph = new DirectedGraph();
+
+  // Setup graphs
+  fileGraph.addNode('src/god.ts', { filePath: 'src/god.ts', loc: 500, symbolCount: 20, layer: 'domain' });
+  fileGraph.addNode('src/constants.ts', { filePath: 'src/constants.ts', loc: 450, symbolCount: 25, layer: 'shared' });
+  fileGraph.addNode('src/presentation/view.ts', { filePath: 'src/presentation/view.ts', loc: 80, symbolCount: 2, layer: 'presentation' });
+  fileGraph.addNode('src/infra/repo.ts', { filePath: 'src/infra/repo.ts', loc: 80, symbolCount: 2, layer: 'infrastructure' });
+  fileGraph.addNode('src/presentation/view.spec.ts', { filePath: 'src/presentation/view.spec.ts', loc: 50, symbolCount: 2, layer: 'presentation' });
+
+  // Add edge for god.ts (outDegree > 0)
+  fileGraph.addEdge('src/god.ts', 'src/infra/repo.ts', { weight: 1 });
+  // constants.ts has outDegree === 0
+
+  const ctx: any = {
+    fileGraph,
+    symbolGraph,
+    communities: {},
+    fileMetrics: new Map([
+      ['src/god.ts', { loc: 500, symbolCount: 20, fanIn: 1, fanOut: 1, instability: 0.5 }],
+      ['src/constants.ts', { loc: 450, symbolCount: 25, fanIn: 5, fanOut: 0, instability: 0 }],
+      ['src/presentation/view.ts', { loc: 80, symbolCount: 2, fanIn: 0, fanOut: 1, instability: 1 }],
+      ['src/infra/repo.ts', { loc: 80, symbolCount: 2, fanIn: 2, fanOut: 0, instability: 0 }]
+    ])
+  };
+
+  // Rule 1: GodFileRule
+  const godRule = new GodFileRule();
+  const godCandidates = godRule.detect(fileGraph, ctx);
+  assert.ok(godCandidates.some(c => c.path === 'src/god.ts'));
+  assert.ok(godCandidates.some(c => c.path === 'src/constants.ts'));
+  // constants.ts has outDegree === 0 and must be ignored deterministically
+  const constCandidate = godCandidates.find(c => c.path === 'src/constants.ts')!;
+  assert.strictEqual(godRule.shouldIgnore(constCandidate, fileGraph, ctx), true, 'Pure constants with outDegree === 0 must be ignored');
+  const realGodCandidate = godCandidates.find(c => c.path === 'src/god.ts')!;
+  assert.strictEqual(godRule.shouldIgnore(realGodCandidate, fileGraph, ctx), false);
+
+  // Rule 3: LayerBypassRule
+  fileGraph.addEdge('src/presentation/view.ts', 'src/infra/repo.ts', { weight: 1 });
+  fileGraph.addEdge('src/presentation/view.spec.ts', 'src/infra/repo.ts', { weight: 1 });
+  const bypassRule = new LayerBypassRule();
+  const bypassCandidates = bypassRule.detect(fileGraph, ctx);
+  assert.ok(bypassCandidates.some(c => c.path === 'src/presentation/view.ts'));
+  const testCandidate = bypassCandidates.find(c => c.path === 'src/presentation/view.spec.ts');
+  if (testCandidate) {
+    assert.strictEqual(bypassRule.shouldIgnore(testCandidate, fileGraph, ctx), true, 'Test files must be ignored');
+  }
+
+  // Rule 4: MixedConcernsRule
+  const mixedRule = new MixedConcernsRule();
+  const dummyVerticalSliceCand: any = {
+    path: 'src/feature',
+    evidence: { files: ['order.controller.ts', 'order.module.ts', 'order.processor.ts'] }
+  };
+  assert.strictEqual(mixedRule.shouldIgnore(dummyVerticalSliceCand, fileGraph, ctx), true, 'Vertical slice folders must be ignored');
+
+  const usecasesCand: any = {
+    path: 'apps/users-service/src/usecases',
+    evidence: { files: ['create-user.usecase.ts', 'find-user.usecase.ts'], layers: ['application'] }
+  };
+  assert.strictEqual(mixedRule.shouldIgnore(usecasesCand, fileGraph, ctx), true, 'Standard usecases/application-layer folder must be ignored');
+
+  // Rule 6: FeatureEnvyRule
+  symbolGraph.addNode('src/user.ts::calculateTax', { filePath: 'src/user.ts', name: 'calculateTax', kind: 'function' });
+  for (let i = 0; i < 4; i++) {
+    const target = `src/tax.ts::helper${i}`;
+    symbolGraph.addNode(target, { filePath: 'src/tax.ts', name: `helper${i}`, kind: 'function' });
+    symbolGraph.addEdge('src/user.ts::calculateTax', target, { relation: 'CALLS' });
+  }
+  const envyRule = new FeatureEnvyRule();
+  const envyCandidates = envyRule.detect(fileGraph, ctx);
+  assert.ok(envyCandidates.length > 0, 'Should detect Feature Envy when method makes >= 4 external calls');
+  const mapperCand: any = { path: 'src/mapper.ts', evidence: { functionName: 'toDto' } };
+  assert.strictEqual(envyRule.shouldIgnore(mapperCand, fileGraph, ctx), true, 'Mapper/toDto functions must be ignored');
+
+  // Rule 7: DeadAbstractionRule
+  symbolGraph.addNode('src/orphan.ts::unusedHelper', {
+    filePath: 'src/orphan.ts',
+    name: 'unusedHelper',
+    kind: 'function',
+    summary: '[exported]'
+  });
+  const deadRule = new DeadAbstractionRule();
+  const deadCandidates = deadRule.detect(fileGraph, ctx);
+  assert.ok(deadCandidates.some(c => c.title.includes('unusedHelper')), 'Should detect unused exported function');
+  const cronCandidate: any = {
+    path: 'src/tasks.ts',
+    evidence: { summary: '[exported] @Cron()', symbolName: 'handleCron' }
+  };
+  assert.strictEqual(deadRule.shouldIgnore(cronCandidate, fileGraph, ctx), true, '@Cron() functions must be ignored');
+});
+
+test('9. 3-Step Execution Loop in runRuleEngine', async () => {
+  const fileGraph = new DirectedGraph();
+  const symbolGraph = new DirectedGraph();
+
+  fileGraph.addNode('src/a.ts', { filePath: 'src/a.ts', loc: 450, symbolCount: 18, layer: 'presentation' });
+  fileGraph.addNode('src/db.ts', { filePath: 'src/db.ts', loc: 100, symbolCount: 5, layer: 'infrastructure' });
+  fileGraph.addEdge('src/a.ts', 'src/db.ts', { weight: 1 });
+
+  const fileMetrics = new Map([
+    ['src/a.ts', { loc: 450, symbolCount: 18, fanIn: 1, fanOut: 1, instability: 0.5 }],
+    ['src/db.ts', { loc: 100, symbolCount: 5, fanIn: 1, fanOut: 0, instability: 0 }]
+  ]);
+
+  let slmCalled = false;
+  const hotspots = await runRuleEngine(fileGraph, symbolGraph, {}, fileMetrics, {
+    rules: DEFAULT_RULES,
+    validateWithSlm: async (candidates) => {
+      slmCalled = true;
+      const res = new Map();
+      for (const c of candidates) {
+        res.set(c.candidate.id, { isViolation: true, reason: 'Confirmed by test validator' });
+      }
+      return res;
+    }
+  });
+
+  assert.ok(hotspots.length > 0, 'Should return hotspots from rules');
+  assert.ok(slmCalled, 'SLM validator should be invoked for ambiguous candidates with prompts');
+  assert.ok(hotspots.some(h => h.category === 'Layer Bypass'));
+});
+

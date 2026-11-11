@@ -20,7 +20,7 @@ export interface NodesTable {
 export interface EdgesTable {
   source_id: string;
   target_id: string;
-  relation: 'CALLS' | 'IMPORTS' | 'EXTENDS' | 'DEPENDS_ON';
+  relation: 'CALLS' | 'IMPORTS' | 'EXTENDS' | 'DEPENDS_ON' | 'IMPORTS_TYPE' | 'RE_EXPORTS' | 'CALLS_LOCAL';
 }
 
 export interface NodesFtsTable {

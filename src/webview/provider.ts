@@ -10,7 +10,10 @@ import { buildArchitecturalAuditPrompt, buildProjectStructurePrompt } from '../a
 import { generateProjectFileTree, extractProjectMetadata } from '../ai/structure-scanner.js';
 import { buildFileGraph, runTier0Assertions } from '../graph/assertions.js';
 import { LocalGGUFModelManager } from '../models/model-manager.js';
-import { runLocalLlamaInference, runLocalFileAnalysis, disposeLocalLlama } from '../ai/local-llama.js';
+import { runLocalLlamaInference, runLocalFileAnalysis, validateCandidatesWithLlama, disposeLocalLlama } from '../ai/local-llama.js';
+import { DEFAULT_RULES, runRuleEngine } from '../rules/index.js';
+// @ts-ignore
+import louvain from 'graphology-communities-louvain';
 import { purgeIgnoredFiles, isIgnoredPath } from '../parser/watcher.js';
 
 export class CodeGraphWebviewProvider implements vscode.WebviewViewProvider {
@@ -328,40 +331,11 @@ export class CodeGraphWebviewProvider implements vscode.WebviewViewProvider {
           // 2. Run Tier 0 Graphology Assertions
           const tier0 = runTier0Assertions(fileGraph);
 
-          // 3. Collect candidates for Qwen 2.5 Coder
-          const fileCandidates: any[] = [];
-          for (const [filePath, m] of tier0.fileMetrics.entries()) {
-            if (isIgnoredPath(filePath)) continue;
-            const isCandidate =
-              m.loc > 150 ||
-              m.fanIn > 3 ||
-              m.fanOut > 4 ||
-              m.instability > 0.7 ||
-              m.pagerank > 0.05 ||
-              m.betweenness > 0.05 ||
-              m.symbolCount > 8;
-
-            if (isCandidate) {
-              fileCandidates.push({
-                path: filePath,
-                loc: m.loc,
-                fanIn: m.fanIn,
-                fanOut: m.fanOut,
-                instability: Math.round(m.instability * 100) / 100,
-                pagerank: Math.round(m.pagerank * 1000) / 1000,
-                betweenness: Math.round(m.betweenness * 1000) / 1000,
-                symbols: m.symbolCount
-              });
-            }
-          }
-
-          const folderCandidates: any[] = [];
-          for (const [folderPath, data] of tier0.folderFeatureVectors.entries()) {
-            if (isIgnoredPath(folderPath) || folderPath === '.' || folderPath === '') continue;
-            folderCandidates.push({
-              path: folderPath,
-              fileCount: data.files.length
-            });
+          let communities: Record<string, number> = {};
+          try {
+            communities = typeof louvain === 'function' ? louvain(fileGraph) : {};
+          } catch {
+            for (const f of fileGraph.nodes()) communities[f] = 0;
           }
 
           let totalSymbols = 0;
@@ -369,17 +343,32 @@ export class CodeGraphWebviewProvider implements vscode.WebviewViewProvider {
             totalSymbols += attrs.symbolCount || 0;
           });
 
-          // Run native llama inference directly in Extension Host
-          const hotspots = await runLocalLlamaInference(
-            modelPath,
-            tier0.deterministicHotspots,
-            fileCandidates,
-            folderCandidates,
-            (msg) => {
-              webview.postMessage({
-                type: 'analysis_status',
-                payload: { status: 'analyzing', message: msg }
-              });
+          // 3. Run the modular 3-Step Architecture Rule Engine
+          const hotspots = await runRuleEngine(
+            fileGraph,
+            this.graphCache.graph,
+            communities,
+            tier0.fileMetrics,
+            {
+              rules: DEFAULT_RULES,
+              validateWithSlm: async (candidatesWithPrompts) => {
+                return await validateCandidatesWithLlama(
+                  modelPath,
+                  candidatesWithPrompts,
+                  (msg) => {
+                    webview.postMessage({
+                      type: 'analysis_status',
+                      payload: { status: 'analyzing', message: msg }
+                    });
+                  }
+                );
+              },
+              onStatus: (msg) => {
+                webview.postMessage({
+                  type: 'analysis_status',
+                  payload: { status: 'analyzing', message: msg }
+                });
+              }
             }
           );
 
@@ -424,16 +413,50 @@ export class CodeGraphWebviewProvider implements vscode.WebviewViewProvider {
         const modelPath = LocalGGUFModelManager.getModelPath(this.globalStoragePath);
         const folders = vscode.workspace.workspaceFolders;
         let sourceCodeSnippet = '';
+        let isDirectory = item.type === 'folder';
+        let fileList: string[] = [];
+
         if (folders && folders.length > 0) {
           try {
             const cleanRelPath = item.path.replace(/^[/\\]+/, '');
             const fullPath = path.resolve(folders[0].uri.fsPath, cleanRelPath);
-            if (fs.existsSync(fullPath) && fs.statSync(fullPath).isFile()) {
-              const content = fs.readFileSync(fullPath, 'utf8');
-              const lines = content.split('\n');
-              sourceCodeSnippet = lines.slice(0, 150).join('\n');
-              if (lines.length > 150) {
-                sourceCodeSnippet += '\n// ... [remaining lines truncated for prompt context]';
+            if (fs.existsSync(fullPath)) {
+              const stat = fs.statSync(fullPath);
+              if (stat.isFile()) {
+                const content = fs.readFileSync(fullPath, 'utf8');
+                const lines = content.split('\n');
+                sourceCodeSnippet = lines.slice(0, 150).join('\n');
+                if (lines.length > 150) {
+                  sourceCodeSnippet += '\n// ... [remaining lines truncated for prompt context]';
+                }
+              } else if (stat.isDirectory()) {
+                isDirectory = true;
+                const entries = fs.readdirSync(fullPath, { withFileTypes: true });
+                const codeFiles = entries
+                  .filter((e) => e.isFile() && /\.(ts|tsx|js|jsx|svelte|vue)$/.test(e.name))
+                  .map((e) => e.name);
+                fileList = codeFiles;
+
+                const manifestLines: string[] = [
+                  `Directory contains ${codeFiles.length} file(s):`
+                ];
+
+                for (const cf of codeFiles.slice(0, 8)) {
+                  const subFilePath = path.join(fullPath, cf);
+                  try {
+                    const subContent = fs.readFileSync(subFilePath, 'utf8');
+                    const signatures = subContent
+                      .split('\n')
+                      .slice(0, 30)
+                      .filter((l) => /^\s*(export\s+(class|interface|type|function|const)|@)/.test(l))
+                      .map((l) => l.trim().replace(/\{.*$/, ''))
+                      .join('; ');
+                    manifestLines.push(`- ${cf}${signatures ? ` (Exports: ${signatures.slice(0, 120)})` : ''}`);
+                  } catch {
+                    manifestLines.push(`- ${cf}`);
+                  }
+                }
+                sourceCodeSnippet = manifestLines.join('\n');
               }
             }
           } catch {}
@@ -444,10 +467,15 @@ export class CodeGraphWebviewProvider implements vscode.WebviewViewProvider {
         const dependencies: string[] = [];
         const dependents: string[] = [];
         const normTarget = item.path.replace(/\\/g, '/').replace(/^[/\\]+/, '').toLowerCase();
+        const targetIsFolder = isDirectory || item.type === 'folder';
 
         this.graphCache.graph.forEachNode((nodeId, attrs: any) => {
           const nodePath = (attrs.filePath || '').replace(/\\/g, '/').replace(/^[/\\]+/, '').toLowerCase();
-          if (nodePath === normTarget) {
+          const matches = targetIsFolder
+            ? nodePath === normTarget || nodePath.startsWith(normTarget + '/')
+            : nodePath === normTarget;
+
+          if (matches) {
             symbols.push(`${attrs.name} (${attrs.kind})`);
             for (const outNeighbor of this.graphCache.graph.outNeighbors(nodeId)) {
               dependencies.push(outNeighbor);
@@ -470,6 +498,8 @@ export class CodeGraphWebviewProvider implements vscode.WebviewViewProvider {
             modelPath,
             {
               path: item.path,
+              isFolder: targetIsFolder,
+              fileList,
               category: item.category,
               description: item.description,
               loc: metrics.loc,

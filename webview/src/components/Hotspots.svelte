@@ -9,10 +9,12 @@
       | 'God File'
       | 'Circular Dependency'
       | 'Layer Bypass'
+      | 'Mixed Concerns'
       | 'Unstable Foundation'
       | 'Bottleneck Hub'
       | 'Domain Tangling'
       | 'Feature Envy'
+      | 'Dead Abstraction'
       | 'Architecture Tip';
     severity: 'critical' | 'high' | 'medium' | 'info';
     title: string;
@@ -96,11 +98,19 @@
         };
       case 'Bottleneck Hub':
       case 'Domain Tangling':
+      case 'Mixed Concerns':
         return {
           container: 'border-amber-400/50 bg-amber-200/5',
           title: 'text-amber-400',
           sub: 'text-amber-400/50',
           btn: 'text-amber-400 bg-amber-400/5 hover:bg-amber-400/10'
+        };
+      case 'Dead Abstraction':
+        return {
+          container: 'border-purple-400/50 bg-purple-200/5',
+          title: 'text-purple-400',
+          sub: 'text-purple-400/50',
+          btn: 'text-purple-400 bg-purple-400/5 hover:bg-purple-400/10'
         };
       case 'Architecture Tip':
       case 'Feature Envy':
@@ -124,19 +134,19 @@
           <span class="text-sm shrink-0">🧠</span>
           <div class="flex flex-col min-w-0">
             <span class="font-medium text-[var(--vscode-foreground)] truncate">Qwen 2.5 Coder 0.5B</span>
-            <span class="text-[10px] text-[var(--vscode-descriptionForeground)]">Local Native (node-llama-cpp)</span>
+            <span class="text-xs text-[var(--vscode-descriptionForeground)]">Local Native (node-llama-cpp)</span>
           </div>
         </div>
 
         <div class="flex items-center gap-2 shrink-0">
           {#if modelStatus.isDownloaded}
-            <span class="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-400 font-mono">
+            <span class="text-xs px-1.5 py-1 rounded bg-emerald-500/20 text-emerald-400 font-mono">
               Ready ({modelStatus.sizeMb} MB)
             </span>
             <button
               onclick={onDeleteModel}
               disabled={isAnalyzing || isDownloadingModel}
-              class="text-xs px-2 py-1 rounded bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/20 transition-colors cursor-pointer disabled:opacity-50"
+              class="text-xs px-2.5 py-1 rounded bg-red-500/20 hover:bg-red-500/30 text-red-400 border transition-colors cursor-pointer disabled:opacity-50"
               title="Delete GGUF model file to free disk space"
             >
               Delete
@@ -160,7 +170,7 @@
       <!-- Download Progress Bar (From HuggingFace to Disk) -->
       {#if downloadProgress}
         <div class="flex flex-col gap-1 mt-1">
-          <div class="flex items-center justify-between text-[11px] text-[var(--vscode-descriptionForeground)] font-mono">
+          <div class="flex items-center justify-between text-xs text-[var(--vscode-descriptionForeground)] font-mono">
             <span>Downloading GGUF to disk...</span>
             <span>{downloadProgress.loadedMb} / {downloadProgress.totalMb} MB ({downloadProgress.pct}%)</span>
           </div>
@@ -185,13 +195,13 @@
           {#if onRetry}
             <button
               onclick={onRetry}
-              class="text-[11px] px-2 py-0.5 rounded bg-red-500/20 hover:bg-red-500/30 text-red-300 border border-red-500/40 cursor-pointer transition-colors"
+              class="text-xs px-2 py-0.5 rounded bg-red-500/20 hover:bg-red-500/30 text-red-300 border border-red-500/40 cursor-pointer transition-colors"
             >
               Retry
             </button>
           {/if}
         </div>
-        <p class="font-mono text-[11px] text-red-300/90 break-words leading-relaxed">{analysisError}</p>
+        <p class="font-mono text-xs text-red-300/90 break-words leading-relaxed">{analysisError}</p>
       </div>
     {/if}
 
@@ -210,7 +220,7 @@
     <!-- Visual Feedback: Workspace Stats Pill -->
     {#if stats}
       <div class="flex items-center justify-between text-xs px-2.5 py-1.5 rounded-md bg-[var(--vscode-badge-background)]/10 border border-[var(--vscode-badge-background)]/20 text-[var(--vscode-foreground)] w-full">
-        <div class="flex items-center gap-3 text-[11px]">
+        <div class="flex items-center gap-3 text-xs">
           {#if stats.folderCount > 0}
             <span class="flex items-center gap-1" title="Analyzed folders (excluding .next, dist, node_modules)">
               <span class="text-[var(--vscode-descriptionForeground)]">📁</span>
@@ -227,7 +237,7 @@
           </span>
         </div>
         {#if stats.durationMs > 0}
-          <span class="text-[var(--vscode-descriptionForeground)] font-mono text-[10px]">{stats.durationMs}ms</span>
+          <span class="text-[var(--vscode-descriptionForeground)] font-mono text-xs">{stats.durationMs}ms</span>
         {/if}
       </div>
     {/if}
@@ -287,7 +297,7 @@
           {#if analysis}
             <div class="mt-3 pt-2.5 border-t border-[var(--vscode-widget-border,#333)] text-xs">
               <div class="flex items-center justify-between mb-1.5">
-                <div class="flex items-center gap-1.5 text-[11px] font-medium text-[var(--vscode-descriptionForeground)]">
+                <div class="flex items-center gap-1.5 text-xs font-medium text-[var(--vscode-descriptionForeground)]">
                   <span class="inline-block w-2 h-2 rounded-full {analysis.isAnalyzing ? 'bg-amber-400 animate-ping' : 'bg-emerald-400'}"></span>
                   <span>Qwen 2.5 Coder Architectural Diagnosis</span>
                 </div>
@@ -295,7 +305,7 @@
                   <button
                     type="button"
                     onclick={() => onToggleExpand?.(item.id)}
-                    class="text-[10px] text-[var(--vscode-textLink-foreground,#3794ff)] hover:underline cursor-pointer"
+                    class="text-xs text-[var(--vscode-textLink-foreground,#3794ff)] hover:underline cursor-pointer"
                   >
                     {analysis.expanded ? 'Collapse' : 'Expand'}
                   </button>
@@ -303,12 +313,12 @@
               </div>
 
               {#if analysis.error}
-                <div class="p-2 rounded bg-rose-950/30 border border-rose-800/40 text-rose-300 text-[11px]">
+                <div class="p-2 rounded bg-rose-950/30 border border-rose-800/40 text-rose-300 text-xs">
                   ⚠️ {analysis.error}
                 </div>
               {:else if analysis.expanded}
                 {#if analysis.isAnalyzing && !analysis.content}
-                  <div class="flex items-center gap-2 p-3 text-[var(--vscode-descriptionForeground)] text-[11px]">
+                  <div class="flex items-center gap-2 p-3 text-[var(--vscode-descriptionForeground)] text-xs">
                     <span class="animate-spin">⚙️</span>
                     <span>Reasoning about code topology & refactoring strategies...</span>
                   </div>
@@ -326,13 +336,13 @@
       <div class="flex flex-col items-center justify-center p-8 gap-3 text-center text-xs text-[var(--vscode-descriptionForeground)]">
         <div class="text-lg animate-spin">⚙️</div>
         <p>{statusMessage || 'Extracting in-memory graph metrics & running Qwen 2.5 Coder classification...'}</p>
-        <span class="text-[10px] text-[var(--vscode-descriptionForeground)] opacity-75">Excluded: .next, dist, node_modules, build</span>
+        <span class="text-xs text-[var(--vscode-descriptionForeground)] opacity-75">Excluded: .next, dist, node_modules, build</span>
       </div>
     {:else if stats}
       <div class="flex flex-col items-center justify-center p-8 gap-2 text-center text-xs text-[var(--vscode-descriptionForeground)]">
         <div class="text-base text-emerald-400">✅</div>
         <p class="font-medium text-[var(--vscode-foreground)]">Clean Architecture</p>
-        <p class="text-[11px] max-w-[240px] text-[var(--vscode-descriptionForeground)]">No critical architectural hotspots detected by Qwen 2.5 Coder or graph assertions.</p>
+        <p class="text-xs max-w-[240px] text-[var(--vscode-descriptionForeground)]">No critical architectural hotspots detected by Qwen 2.5 Coder or graph assertions.</p>
       </div>
     {:else}
       <p class="text-xs text-[var(--vscode-descriptionForeground)] leading-relaxed">Nothing to show here. Click "Analyse Project" above to inspect architecture.</p>

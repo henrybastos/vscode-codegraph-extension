@@ -106,13 +106,14 @@ export function parseFileAst(
     if (type === 'import_statement') {
       const sourceNode = node.childForFieldName('source');
       const moduleSpecifier = sourceNode ? sourceNode.text.replace(/['"]/g, '') : '';
+      const isTypeOnly = node.text.startsWith('import type') || node.children.some(c => c.type === 'type');
       if (moduleSpecifier) {
         const resolvedModule = resolveImportPath(moduleSpecifier, filePath);
         if (resolvedModule && !resolvedModule.startsWith('package:')) {
           edges.push({
             sourceId: filePath,
             targetId: resolvedModule,
-            relation: 'IMPORTS'
+            relation: isTypeOnly ? 'IMPORTS_TYPE' : 'IMPORTS'
           });
         }
       }
@@ -144,10 +145,11 @@ export function parseFileAst(
         const moduleSpecifier = sourceNode.text.replace(/['"]/g, '');
         const resolvedModule = resolveImportPath(moduleSpecifier, filePath);
         if (resolvedModule && !resolvedModule.startsWith('package:')) {
+          const isBarrel = path.basename(filePath).startsWith('index.');
           edges.push({
             sourceId: filePath,
             targetId: resolvedModule,
-            relation: 'IMPORTS'
+            relation: isBarrel ? 'RE_EXPORTS' : 'IMPORTS'
           });
         }
         return;
@@ -155,6 +157,8 @@ export function parseFileAst(
     }
 
     let detectedSymbol: ParsedSymbol | null = null;
+    const meta = extractSymbolMetadata(node);
+    const metaTag = [meta.isExported ? '[exported]' : '', ...meta.decorators].filter(Boolean).join(' ') || undefined;
 
     if (type === 'function_declaration' || type === 'generator_function_declaration') {
       const nameNode = node.childForFieldName('name');
@@ -165,6 +169,7 @@ export function parseFileAst(
         name,
         kind: 'function',
         signature: extractSignature(node, sourceCode),
+        summary: metaTag,
         startLine: node.startPosition.row + 1,
         endLine: node.endPosition.row + 1
       };
@@ -177,6 +182,7 @@ export function parseFileAst(
         name,
         kind: 'class',
         signature: `class ${name}`,
+        summary: metaTag,
         startLine: node.startPosition.row + 1,
         endLine: node.endPosition.row + 1
       };
@@ -209,6 +215,7 @@ export function parseFileAst(
         name: `${parentName}.${name}`,
         kind: 'function',
         signature: extractSignature(node, sourceCode),
+        summary: metaTag,
         startLine: node.startPosition.row + 1,
         endLine: node.endPosition.row + 1
       };
@@ -228,6 +235,7 @@ export function parseFileAst(
         name,
         kind: 'interface',
         signature: `interface ${name}`,
+        summary: metaTag,
         startLine: node.startPosition.row + 1,
         endLine: node.endPosition.row + 1
       };
@@ -240,6 +248,7 @@ export function parseFileAst(
         name,
         kind: 'type',
         signature: `type ${name}`,
+        summary: metaTag,
         startLine: node.startPosition.row + 1,
         endLine: node.endPosition.row + 1
       };
@@ -259,6 +268,7 @@ export function parseFileAst(
                 name,
                 kind: 'function',
                 signature: extractSignature(valueNode, sourceCode, name),
+                summary: metaTag,
                 startLine: declarator.startPosition.row + 1,
                 endLine: declarator.endPosition.row + 1
               };
@@ -279,19 +289,28 @@ export function parseFileAst(
     if (activeSymbol && (type === 'call_expression')) {
       const functionNode = node.childForFieldName('function');
       if (functionNode) {
-        let calleeName = functionNode.text;
-        // e.g. foo() or this.foo() or obj.foo()
+        const fullCallee = functionNode.text;
+        const isThis = fullCallee.startsWith('this.');
+        let calleeName = fullCallee;
         if (calleeName.includes('.')) {
           const parts = calleeName.split('.');
           calleeName = parts[parts.length - 1];
         }
         if (calleeName && calleeName.length > 1 && !isJsBuiltin(calleeName)) {
-          const targetId = resolveTargetId(calleeName, filePath, importMap);
-          edges.push({
-            sourceId: activeSymbol.id,
-            targetId,
-            relation: 'CALLS'
-          });
+          if (isThis) {
+            edges.push({
+              sourceId: activeSymbol.id,
+              targetId: `${filePath}::${calleeName}`,
+              relation: 'CALLS_LOCAL'
+            });
+          } else {
+            const targetId = resolveTargetId(calleeName, filePath, importMap);
+            edges.push({
+              sourceId: activeSymbol.id,
+              targetId,
+              relation: 'CALLS'
+            });
+          }
         }
       }
     }
@@ -304,6 +323,28 @@ export function parseFileAst(
   traverse(rootNode);
 
   return { symbols, edges };
+}
+
+function extractSymbolMetadata(node: Parser.SyntaxNode): { isExported: boolean; decorators: string[] } {
+  let isExported = false;
+  let curr: Parser.SyntaxNode | null = node;
+  while (curr) {
+    if (curr.type === 'export_statement') {
+      isExported = true;
+      break;
+    }
+    curr = curr.parent;
+  }
+  const decorators: string[] = [];
+  const candidates = [node, node.parent].filter(Boolean) as Parser.SyntaxNode[];
+  for (const c of candidates) {
+    for (const child of c.namedChildren) {
+      if (child.type === 'decorator') {
+        decorators.push(child.text.trim());
+      }
+    }
+  }
+  return { isExported, decorators };
 }
 
 function extractSignature(node: Parser.SyntaxNode, sourceCode: string, fallbackName?: string): string {

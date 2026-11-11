@@ -14,7 +14,7 @@ export interface ParsedSymbol {
 export interface ParsedEdge {
   sourceId: string;
   targetId: string;
-  relation: 'CALLS' | 'IMPORTS' | 'EXTENDS' | 'DEPENDS_ON';
+  relation: 'CALLS' | 'IMPORTS' | 'EXTENDS' | 'DEPENDS_ON' | 'IMPORTS_TYPE' | 'RE_EXPORTS' | 'CALLS_LOCAL';
 }
 
 export async function syncFileAst(
