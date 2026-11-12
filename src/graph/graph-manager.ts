@@ -68,12 +68,65 @@ export class CodeGraphCache {
       .execute();
 
     for (const edge of edges) {
-      if (this.graph.hasNode(edge.source_id) && this.graph.hasNode(edge.target_id)) {
-        this.graph.mergeEdge(edge.source_id, edge.target_id, {
+      const src = this.resolveActualNodeId(edge.source_id);
+      const tgt = this.resolveActualNodeId(edge.target_id);
+      if (src && tgt) {
+        this.graph.mergeEdge(src, tgt, {
           relation: edge.relation
         });
       }
     }
+  }
+
+  public resolveActualNodeId(id: string): string | null {
+    if (!id) return null;
+    const norm = id.replace(/\\/g, '/').replace(/^\.\//, '').replace(/^\/+/, '');
+    if (this.graph.hasNode(norm)) return norm;
+    if (this.graph.hasNode(id)) return id;
+
+    if (norm.includes('::')) {
+      const candidates = [
+        norm.replace('::', '.ts::'),
+        norm.replace('::', '.tsx::'),
+        norm.replace('::', '.js::'),
+        norm.replace('::', '.jsx::'),
+        norm.replace('::', '.dto.ts::'),
+        norm.replace('::', '.service.ts::'),
+        norm.replace('::', '.entity.ts::'),
+        norm.replace('::', '.usecase.ts::'),
+        norm.replace('::', '/index.ts::'),
+        norm.replace('::', '/index.tsx::'),
+        norm.replace('::', '/index.js::')
+      ];
+      for (const c of candidates) {
+        if (this.graph.hasNode(c)) return c;
+      }
+    } else {
+      const candidates = [
+        norm + '.ts',
+        norm + '.tsx',
+        norm + '.js',
+        norm + '.jsx',
+        norm + '.dto.ts',
+        norm + '.service.ts',
+        norm + '.entity.ts',
+        norm + '.usecase.ts',
+        norm + '/index.ts',
+        norm + '/index.tsx',
+        norm + '/index.js'
+      ];
+      for (const c of candidates) {
+        if (this.graph.hasNode(c)) return c;
+      }
+    }
+
+    // Case-insensitive fallback
+    const lowerNorm = norm.toLowerCase();
+    for (const nodeId of this.graph.nodes()) {
+      if (nodeId.toLowerCase() === lowerNorm) return nodeId;
+    }
+
+    return null;
   }
 
   removeFileNodes(filePath: string): void {
@@ -107,8 +160,10 @@ export class CodeGraphCache {
     }
 
     for (const e of newEdges) {
-      if (this.graph.hasNode(e.sourceId) && this.graph.hasNode(e.targetId)) {
-        this.graph.mergeEdge(e.sourceId, e.targetId, { relation: e.relation });
+      const src = this.resolveActualNodeId(e.sourceId);
+      const tgt = this.resolveActualNodeId(e.targetId);
+      if (src && tgt) {
+        this.graph.mergeEdge(src, tgt, { relation: e.relation });
       }
     }
   }

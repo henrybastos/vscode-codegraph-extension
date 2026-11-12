@@ -12,6 +12,7 @@ import { generateProjectFileTree, extractProjectMetadata } from '../ai/structure
 import { buildProjectStructurePrompt } from '../ai/prompts.js';
 import { buildFileGraph, runTier0Assertions } from '../graph/assertions.js';
 import { LocalGGUFModelManager } from '../models/model-manager.js';
+import { SymbolRoleClassifier } from '../ai/symbol-classifier.js';
 import {
   DEFAULT_RULES,
   runRuleEngine,
@@ -21,7 +22,8 @@ import {
   MixedConcernsRule,
   UnstableFoundationRule,
   FeatureEnvyRule,
-  DeadAbstractionRule
+  DeadAbstractionRule,
+  ApiDecompositionRule
 } from '../rules/index.js';
 import { DirectedGraph } from 'graphology';
 
@@ -229,7 +231,7 @@ test('7. Local GGUF Model Manager & Path Resolution', async () => {
   assert.strictEqual(deleted, false);
 });
 
-test('8. Modular 7-Rule Plugin Catalog & Deterministic Ignore Filters', () => {
+test('8. Modular 7-Rule Plugin Catalog & Deterministic Ignore Filters', async () => {
   const fileGraph = new DirectedGraph();
   const symbolGraph = new DirectedGraph();
 
@@ -302,8 +304,8 @@ test('8. Modular 7-Rule Plugin Catalog & Deterministic Ignore Filters', () => {
   const envyRule = new FeatureEnvyRule();
   const envyCandidates = envyRule.detect(fileGraph, ctx);
   assert.ok(envyCandidates.length > 0, 'Should detect Feature Envy when method makes >= 4 external calls');
-  const mapperCand: any = { path: 'src/mapper.ts', evidence: { functionName: 'toDto' } };
-  assert.strictEqual(envyRule.shouldIgnore(mapperCand, fileGraph, ctx), true, 'Mapper/toDto functions must be ignored');
+  const testFileCand: any = { path: 'src/user.test.ts', evidence: { functionName: 'testCalculateTax' } };
+  assert.strictEqual(await envyRule.shouldIgnore(testFileCand, fileGraph, ctx), true, 'Test/spec files must be ignored');
 
   // Rule 7: DeadAbstractionRule
   symbolGraph.addNode('src/orphan.ts::unusedHelper', {
@@ -320,6 +322,12 @@ test('8. Modular 7-Rule Plugin Catalog & Deterministic Ignore Filters', () => {
     evidence: { summary: '[exported] @Cron()', symbolName: 'handleCron' }
   };
   assert.strictEqual(deadRule.shouldIgnore(cronCandidate, fileGraph, ctx), true, '@Cron() functions must be ignored');
+
+  const dtoCandidate: any = {
+    path: 'apps/users-service/src/dtos/user.dto.ts',
+    evidence: { summary: '[exported]', symbolName: 'RegisterClinicManagerDto' }
+  };
+  assert.strictEqual(deadRule.shouldIgnore(dtoCandidate, fileGraph, ctx), true, 'DTO classes must be ignored');
 });
 
 test('9. 3-Step Execution Loop in runRuleEngine', async () => {
@@ -352,4 +360,155 @@ test('9. 3-Step Execution Loop in runRuleEngine', async () => {
   assert.ok(slmCalled, 'SLM validator should be invoked for ambiguous candidates with prompts');
   assert.ok(hotspots.some(h => h.category === 'Layer Bypass'));
 });
+
+test('10. API & Granularity Decomposition Rule', () => {
+  const fileGraph = new DirectedGraph();
+  const symbolGraph = new DirectedGraph();
+
+  fileGraph.addNode('src/billing.controller.ts', { filePath: 'src/billing.controller.ts', loc: 220, symbolCount: 5 });
+  fileGraph.addNode('src/subscription.usecase.ts', { filePath: 'src/subscription.usecase.ts', loc: 310, symbolCount: 7 });
+
+  // Add 4 heavy methods to billing.controller.ts
+  for (let i = 0; i < 4; i++) {
+    const methodId = `src/billing.controller.ts::BillingController.route${i}`;
+    symbolGraph.addNode(methodId, {
+      filePath: 'src/billing.controller.ts',
+      name: `route${i}`,
+      kind: 'method',
+      summary: '@Post()',
+      startLine: i * 35 + 1,
+      endLine: (i + 1) * 35
+    });
+    // Add external calls
+    for (let c = 0; c < 5; c++) {
+      const extTarget = `src/db.ts::repo${i}_${c}`;
+      if (!symbolGraph.hasNode(extTarget)) {
+        symbolGraph.addNode(extTarget, { filePath: 'src/db.ts', name: `repo${i}_${c}`, kind: 'function' });
+      }
+      symbolGraph.addEdge(methodId, extTarget, { relation: 'CALLS' });
+    }
+  }
+
+  // Add 6 methods to subscription.usecase.ts
+  for (let i = 0; i < 6; i++) {
+    const methodId = `src/subscription.usecase.ts::SubscriptionUseCase.cmd${i}`;
+    symbolGraph.addNode(methodId, {
+      filePath: 'src/subscription.usecase.ts',
+      name: `cmd${i}`,
+      kind: 'method',
+      startLine: i * 50 + 1,
+      endLine: (i + 1) * 50
+    });
+    const target = `src/service${i}.ts::call`;
+    if (!symbolGraph.hasNode(target)) {
+      symbolGraph.addNode(target, { filePath: `src/service${i}.ts`, name: 'call', kind: 'function' });
+    }
+    symbolGraph.addEdge(methodId, target, { relation: 'CALLS' });
+  }
+
+  const ctx: any = {
+    fileGraph,
+    symbolGraph,
+    communities: {},
+    fileMetrics: new Map([
+      ['src/billing.controller.ts', { loc: 220, symbolCount: 5, fanIn: 1, fanOut: 20, instability: 0.95 }],
+      ['src/subscription.usecase.ts', { loc: 310, symbolCount: 7, fanIn: 1, fanOut: 6, instability: 0.85 }]
+    ])
+  };
+
+  const apiRule = new ApiDecompositionRule();
+  const candidates = apiRule.detect(fileGraph, ctx);
+
+  assert.ok(candidates.length >= 2, 'Should detect both fat controller and bloated usecase');
+  const ctrlCand = candidates.find(c => c.path === 'src/billing.controller.ts');
+  assert.ok(ctrlCand, 'Should detect fat controller candidate');
+  assert.strictEqual(ctrlCand.category, 'API Decomposition');
+  assert.strictEqual(ctrlCand.evidence?.pattern, 'EXTRACT_USECASES');
+  assert.ok(ctrlCand.suggestedFiles && ctrlCand.suggestedFiles.length > 0, 'Should suggest extraction files');
+
+  const usecaseCand = candidates.find(c => c.path === 'src/subscription.usecase.ts');
+  assert.ok(usecaseCand, 'Should detect bloated usecase candidate');
+  assert.strictEqual(usecaseCand.evidence?.pattern, 'SPLIT_HANDLERS');
+
+  // Verify shouldIgnore
+  const thinControllerCand: any = {
+    path: 'src/user.controller.ts',
+    evidence: {
+      pattern: 'EXTRACT_USECASES',
+      methods: [
+        { name: 'getUser', loc: 8, externalCalls: 1 },
+        { name: 'listUsers', loc: 10, externalCalls: 1 }
+      ]
+    }
+  };
+  assert.strictEqual(apiRule.shouldIgnore(thinControllerCand, fileGraph, ctx), true, 'Thin proxy controller should be ignored');
+
+  const singleExecuteCand: any = {
+    path: 'src/create-user.usecase.ts',
+    evidence: {
+      pattern: 'SPLIT_HANDLERS',
+      methods: [
+        { name: 'execute', loc: 45 },
+        { name: '_validate', loc: 12 }
+      ]
+    }
+  };
+  assert.strictEqual(apiRule.shouldIgnore(singleExecuteCand, fileGraph, ctx), true, 'Single-execute use case should be ignored');
+
+  // Verify prompt generation
+  const prompt = apiRule.buildSlmValidationPrompt(ctrlCand, ctx);
+  assert.ok(prompt.includes('EXTRACT_USECASES'));
+  assert.ok(prompt.includes('suggestedFiles'));
+});
+
+test('11. SymbolRoleClassifier & MiniLM ONNX Semantic Role Classification', async () => {
+  const modelDir = path.resolve('dist/test_storage/minilm');
+  const classifier = new SymbolRoleClassifier();
+
+  await classifier.init(modelDir);
+  assert.strictEqual(classifier.isInitialized(), true, 'Classifier must be marked initialized');
+
+  // Test 1: Event router / webhook
+  const webhookRes = await classifier.classify(
+    'processEvent',
+    'apps/payment-service/src/usecases/handle-stripe-webhook/handle-stripe-webhook.usecase.ts'
+  );
+  assert.strictEqual(webhookRes.role, 'event_router_webhook');
+  assert.strictEqual(webhookRes.shouldIgnore, true);
+
+  // Test 2: Mapper / serializer
+  const mapperRes = await classifier.classify('toUserResponseDto', 'src/mappers/user.mapper.ts');
+  assert.strictEqual(mapperRes.role, 'mapper_serializer');
+  assert.strictEqual(mapperRes.shouldIgnore, true);
+
+  // Test 3: Factory / builder
+  const builderRes = await classifier.classify('buildPaymentPayload', 'src/builders/payment.builder.ts');
+  assert.strictEqual(builderRes.role, 'factory_builder');
+  assert.strictEqual(builderRes.shouldIgnore, true);
+
+  // Test 4: Core business logic
+  const logicRes = await classifier.classify('calculateQuarterlyTax', 'src/services/tax-calculator.ts');
+  assert.strictEqual(logicRes.role, 'core_logic');
+  assert.strictEqual(logicRes.shouldIgnore, false);
+
+  // Test 5: Verify FeatureEnvyRule.shouldIgnore with classifier
+  const envyRule = new FeatureEnvyRule();
+  const webhookCandidate: any = {
+    path: 'apps/payment-service/src/usecases/handle-stripe-webhook/handle-stripe-webhook.usecase.ts',
+    evidence: { functionName: 'processEvent' }
+  };
+  const ctxWithClassifier: any = { roleClassifier: classifier };
+  const shouldIgnoreWebhook = await envyRule.shouldIgnore(webhookCandidate, new DirectedGraph(), ctxWithClassifier);
+  assert.strictEqual(shouldIgnoreWebhook, true);
+  assert.strictEqual(webhookCandidate.evidence.inferredRole, 'event_router_webhook');
+
+  const logicCandidate: any = {
+    path: 'src/services/tax-calculator.ts',
+    evidence: { functionName: 'calculateQuarterlyTax' }
+  };
+  const shouldIgnoreLogic = await envyRule.shouldIgnore(logicCandidate, new DirectedGraph(), ctxWithClassifier);
+  assert.strictEqual(shouldIgnoreLogic, false);
+  assert.strictEqual(logicCandidate.evidence.inferredRole, 'core_logic');
+});
+
 

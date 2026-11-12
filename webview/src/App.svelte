@@ -20,6 +20,7 @@
   let downloadProgress = $state<{ pct: number; loadedMb: number; totalMb: number } | null>(null);
   let analysisError = $state<string>('');
   let isDownloadingModel = $state(false);
+  let analysisType = $state<'all' | 'api_patterns'>('all');
 
   onMount(() => {
     vscode.postMessage({ command: 'get_model_status' });
@@ -31,9 +32,18 @@
 
   function handleAnalyzeProjectLocal() {
     isAnalyzing = true;
+    analysisType = 'all';
     analysisError = '';
     statusMessage = 'Starting local analysis...';
     vscode.postMessage({ command: 'analyse_project_local' });
+  }
+
+  function handleCheckApiPatterns() {
+    isAnalyzing = true;
+    analysisType = 'api_patterns';
+    analysisError = '';
+    statusMessage = 'Checking API patterns & route controllers...';
+    vscode.postMessage({ command: 'check_api_patterns' });
   }
 
   function handleDownloadModel() {
@@ -184,14 +194,28 @@
         class="text-zinc-50 text-xs px-3 py-2 h-fit w-full mb-auto rounded bg-zinc-400/30 hover:bg-zinc-400/40 disabled:opacity-50 transition-colors leading-none cursor-pointer flex items-center justify-center gap-2"
         title="Analyse Project (WASM + Qwen 2.5 Coder)"
       >
-        {#if isAnalyzing}
+        {#if isAnalyzing && analysisType !== 'api_patterns'}
           <span class="inline-block animate-spin">⚙️</span>
-          <span>Analysing Project (Qwen 2.5 Coder)...</span>
+          <span>Analysing Project...</span>
         {:else if isDownloadingModel}
           <span class="inline-block animate-spin">⬇️</span>
           <span>Downloading Model ({downloadProgress?.pct ?? 0}%)...</span>
         {:else}
           <span>Analyse Project</span>
+        {/if}
+      </button>
+      
+      <button
+        onclick={handleCheckApiPatterns}
+        disabled={isAnalyzing || isDownloadingModel}
+        class="text-zinc-50 text-xs px-3 py-2 h-fit w-full mb-auto rounded bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 border border-cyan-500/30 disabled:opacity-50 transition-colors leading-none cursor-pointer flex items-center justify-center gap-2"
+        title="Check API Patterns (Controllers -> UseCases, UseCases -> Handlers)"
+      >
+        {#if isAnalyzing && analysisType === 'api_patterns'}
+          <span class="inline-block animate-spin">⚙️</span>
+          <span>Checking API Patterns...</span>
+        {:else}
+          <span>Check API Patterns</span>
         {/if}
       </button>
     </div>
@@ -208,7 +232,7 @@
       {fileAnalyses}
       onDownloadModel={handleDownloadModel}
       onDeleteModel={handleDeleteModel}
-      onRetry={handleAnalyzeProjectLocal}
+      onRetry={analysisType === 'api_patterns' ? handleCheckApiPatterns : handleAnalyzeProjectLocal}
       onOpenFile={handleOpenFile}
       onAnalyseFile={handleAnalyseFile}
       onToggleExpand={handleToggleExpand}

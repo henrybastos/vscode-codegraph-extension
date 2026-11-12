@@ -5,6 +5,7 @@ import { MixedConcernsRule } from './catalog/mixed-concerns.rule.js';
 import { UnstableFoundationRule } from './catalog/unstable-foundation.rule.js';
 import { FeatureEnvyRule } from './catalog/feature-envy.rule.js';
 import { DeadAbstractionRule } from './catalog/dead-abstraction.rule.js';
+import { ApiDecompositionRule } from './catalog/api-decomposition.rule.js';
 import type { ArchitectureRule } from './types.js';
 
 export * from './types.js';
@@ -16,7 +17,8 @@ export {
   MixedConcernsRule,
   UnstableFoundationRule,
   FeatureEnvyRule,
-  DeadAbstractionRule
+  DeadAbstractionRule,
+  ApiDecompositionRule
 };
 
 export const DEFAULT_RULES: ArchitectureRule[] = [
@@ -26,5 +28,6 @@ export const DEFAULT_RULES: ArchitectureRule[] = [
   new MixedConcernsRule(),
   new UnstableFoundationRule(),
   new FeatureEnvyRule(),
-  new DeadAbstractionRule()
+  new DeadAbstractionRule(),
+  new ApiDecompositionRule()
 ];

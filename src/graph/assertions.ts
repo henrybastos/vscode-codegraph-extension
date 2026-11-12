@@ -25,10 +25,12 @@ export interface HotspotItem {
     | 'Domain Tangling'
     | 'Feature Envy'
     | 'Dead Abstraction'
+    | 'API Decomposition'
     | 'Architecture Tip';
   severity: 'critical' | 'high' | 'medium' | 'info';
   title: string;
   description: string;
+  suggestedFiles?: string[];
   metrics?: {
     loc?: number;
     fanIn?: number;

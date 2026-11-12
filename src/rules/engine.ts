@@ -1,13 +1,15 @@
 import { DirectedGraph } from 'graphology';
 import type { HotspotItem } from '../graph/assertions.js';
 import type { ArchitectureRule, FlaggedCandidate, RuleContext } from './types.js';
+import type { SymbolRoleClassifier } from '../ai/symbol-classifier.js';
 import { isIgnoredPath } from '../parser/watcher.js';
 
 export interface RuleEngineOptions {
   rules: ArchitectureRule[];
+  roleClassifier?: SymbolRoleClassifier;
   validateWithSlm?: (
     candidatesWithPrompts: Array<{ candidate: FlaggedCandidate; prompt: string }>
-  ) => Promise<Map<string, { isViolation: boolean; reason?: string }>>;
+  ) => Promise<Map<string, { isViolation: boolean; reason?: string; suggestedFiles?: string[] }>>;
   onStatus?: (message: string) => void;
 }
 
@@ -24,7 +26,8 @@ export async function runRuleEngine(
     fileGraph,
     symbolGraph,
     communities,
-    fileMetrics
+    fileMetrics,
+    roleClassifier: options.roleClassifier
   };
 
   // Step 1: Fast in-memory detection (< 2ms)
@@ -52,7 +55,7 @@ export async function runRuleEngine(
     if (!rule) continue;
 
     try {
-      const ignored = rule.shouldIgnore(cand, fileGraph, ctx);
+      const ignored = await rule.shouldIgnore(cand, fileGraph, ctx);
       if (!ignored) {
         survivingCandidates.push(cand);
       }
@@ -96,6 +99,9 @@ export async function runRuleEngine(
           if (res?.reason) {
             item.description = `${item.description} (Qwen 0.5B: ${res.reason})`;
           }
+          if (res?.suggestedFiles && res.suggestedFiles.length > 0) {
+            item.suggestedFiles = res.suggestedFiles;
+          }
           finalHotspots.push(item);
         }
       }
@@ -135,6 +141,7 @@ function candidateToHotspot(c: FlaggedCandidate): HotspotItem {
     severity: c.severity,
     title: c.title,
     description: c.description,
+    suggestedFiles: c.suggestedFiles || c.evidence?.suggestedFiles,
     metrics: c.metrics
       ? {
           loc: c.metrics.loc,

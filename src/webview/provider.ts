@@ -10,8 +10,9 @@ import { buildArchitecturalAuditPrompt, buildProjectStructurePrompt } from '../a
 import { generateProjectFileTree, extractProjectMetadata } from '../ai/structure-scanner.js';
 import { buildFileGraph, runTier0Assertions } from '../graph/assertions.js';
 import { LocalGGUFModelManager } from '../models/model-manager.js';
+import type { SymbolRoleClassifier } from '../ai/symbol-classifier.js';
 import { runLocalLlamaInference, runLocalFileAnalysis, validateCandidatesWithLlama, disposeLocalLlama } from '../ai/local-llama.js';
-import { DEFAULT_RULES, runRuleEngine } from '../rules/index.js';
+import { DEFAULT_RULES, ApiDecompositionRule, runRuleEngine } from '../rules/index.js';
 // @ts-ignore
 import louvain from 'graphology-communities-louvain';
 import { purgeIgnoredFiles, isIgnoredPath } from '../parser/watcher.js';
@@ -28,7 +29,8 @@ export class CodeGraphWebviewProvider implements vscode.WebviewViewProvider {
     private readonly db: Kysely<DatabaseSchema>,
     private readonly graphCache: CodeGraphCache,
     private readonly aiClient: OpenRouterClient,
-    private readonly onReindex: (force?: boolean) => Promise<void>
+    private readonly onReindex: (force?: boolean) => Promise<void>,
+    private readonly roleClassifier?: SymbolRoleClassifier
   ) {}
 
   registerWebview(webview: vscode.Webview): void {
@@ -276,123 +278,20 @@ export class CodeGraphWebviewProvider implements vscode.WebviewViewProvider {
       }
 
       case 'analyse_project_local': {
-        try {
-          const folders = vscode.workspace.workspaceFolders;
-          if (!folders || folders.length === 0) {
-            vscode.window.showWarningMessage('No active workspace folder to analyze.');
-            return;
-          }
+        await this.runProjectAnalysis(
+          webview,
+          DEFAULT_RULES,
+          'Extracting graph metrics & preparing local model...'
+        );
+        break;
+      }
 
-          // If graph cache is empty, trigger an index first
-          if (this.graphCache.graph.order === 0) {
-            webview.postMessage({
-              type: 'analysis_status',
-              payload: { status: 'indexing', message: 'Indexing project files...' }
-            });
-            await this.onReindex(false);
-          }
-
-          // Ensure model is downloaded
-          let modelPath = LocalGGUFModelManager.getModelPath(this.globalStoragePath);
-          if (!LocalGGUFModelManager.isModelDownloaded(this.globalStoragePath)) {
-            webview.postMessage({
-              type: 'analysis_status',
-              payload: { status: 'downloading_model', message: 'Downloading Qwen 2.5 Coder 0.5B model (~398MB)...' }
-            });
-            modelPath = await LocalGGUFModelManager.downloadModel(
-              this.globalStoragePath,
-              (info) => {
-                webview.postMessage({
-                  type: 'model_download_progress',
-                  payload: info
-                });
-              }
-            );
-            const sizeMb = LocalGGUFModelManager.getModelSizeMb(this.globalStoragePath);
-            webview.postMessage({
-              type: 'model_status',
-              payload: { isDownloaded: true, sizeMb }
-            });
-          }
-
-          webview.postMessage({
-            type: 'analysis_status',
-            payload: { status: 'analyzing', message: 'Extracting graph metrics & preparing local model...' }
-          });
-
-          const startTime = performance.now();
-
-          // Purge any stale ignored files from DB and in-memory graph
-          await purgeIgnoredFiles(this.db, this.graphCache);
-
-          // 1. Build FileGraph from in-memory graph
-          const fileGraph = buildFileGraph(this.graphCache.graph);
-
-          // 2. Run Tier 0 Graphology Assertions
-          const tier0 = runTier0Assertions(fileGraph);
-
-          let communities: Record<string, number> = {};
-          try {
-            communities = typeof louvain === 'function' ? louvain(fileGraph) : {};
-          } catch {
-            for (const f of fileGraph.nodes()) communities[f] = 0;
-          }
-
-          let totalSymbols = 0;
-          fileGraph.forEachNode((_, attrs: any) => {
-            totalSymbols += attrs.symbolCount || 0;
-          });
-
-          // 3. Run the modular 3-Step Architecture Rule Engine
-          const hotspots = await runRuleEngine(
-            fileGraph,
-            this.graphCache.graph,
-            communities,
-            tier0.fileMetrics,
-            {
-              rules: DEFAULT_RULES,
-              validateWithSlm: async (candidatesWithPrompts) => {
-                return await validateCandidatesWithLlama(
-                  modelPath,
-                  candidatesWithPrompts,
-                  (msg) => {
-                    webview.postMessage({
-                      type: 'analysis_status',
-                      payload: { status: 'analyzing', message: msg }
-                    });
-                  }
-                );
-              },
-              onStatus: (msg) => {
-                webview.postMessage({
-                  type: 'analysis_status',
-                  payload: { status: 'analyzing', message: msg }
-                });
-              }
-            }
-          );
-
-          const elapsedMs = Math.round(performance.now() - startTime);
-
-          webview.postMessage({
-            type: 'hotspots_result',
-            payload: {
-              hotspots,
-              stats: {
-                fileCount: fileGraph.order,
-                folderCount: tier0.folderFeatureVectors.size,
-                symbolCount: totalSymbols,
-                durationMs: elapsedMs
-              }
-            }
-          });
-        } catch (err: any) {
-          vscode.window.showErrorMessage(`Local architecture analysis failed: ${err.message}`);
-          webview.postMessage({
-            type: 'hotspots_error',
-            payload: err?.message || String(err)
-          });
-        }
+      case 'check_api_patterns': {
+        await this.runProjectAnalysis(
+          webview,
+          [new ApiDecompositionRule()],
+          'Checking controllers & use case method topology...'
+        );
         break;
       }
 
@@ -425,9 +324,20 @@ export class CodeGraphWebviewProvider implements vscode.WebviewViewProvider {
               if (stat.isFile()) {
                 const content = fs.readFileSync(fullPath, 'utf8');
                 const lines = content.split('\n');
-                sourceCodeSnippet = lines.slice(0, 150).join('\n');
-                if (lines.length > 150) {
-                  sourceCodeSnippet += '\n// ... [remaining lines truncated for prompt context]';
+
+                const startLine = item.evidence?.startLine;
+                const endLine = item.evidence?.endLine;
+
+                if (startLine && endLine && startLine <= endLine && startLine <= lines.length) {
+                  const sliceStart = Math.max(0, startLine - 1);
+                  const sliceEnd = Math.min(lines.length, endLine);
+                  const fnLines = lines.slice(sliceStart, sliceEnd);
+                  sourceCodeSnippet = `// Focal method excerpt: ${item.evidence.functionName || 'target'} (lines ${startLine}-${endLine} of ${lines.length}):\n` + fnLines.join('\n');
+                } else {
+                  sourceCodeSnippet = lines.slice(0, 180).join('\n');
+                  if (lines.length > 180) {
+                    sourceCodeSnippet += `\n// ... [remaining ${lines.length - 180} lines truncated for prompt context]`;
+                  }
                 }
               } else if (stat.isDirectory()) {
                 isDirectory = true;
@@ -550,6 +460,131 @@ export class CodeGraphWebviewProvider implements vscode.WebviewViewProvider {
         await vscode.commands.executeCommand('codegraph.setApiKey');
         break;
       }
+    }
+  }
+
+  private async runProjectAnalysis(
+    webview: vscode.Webview,
+    rules: any[],
+    initialStatus: string
+  ): Promise<void> {
+    try {
+      const folders = vscode.workspace.workspaceFolders;
+      if (!folders || folders.length === 0) {
+        vscode.window.showWarningMessage('No active workspace folder to analyze.');
+        return;
+      }
+
+      // If graph cache is empty, trigger an index first
+      if (this.graphCache.graph.order === 0) {
+        webview.postMessage({
+          type: 'analysis_status',
+          payload: { status: 'indexing', message: 'Indexing project files...' }
+        });
+        await this.onReindex(false);
+      }
+
+      // Ensure model is downloaded
+      let modelPath = LocalGGUFModelManager.getModelPath(this.globalStoragePath);
+      if (!LocalGGUFModelManager.isModelDownloaded(this.globalStoragePath)) {
+        webview.postMessage({
+          type: 'analysis_status',
+          payload: { status: 'downloading_model', message: 'Downloading Qwen 2.5 Coder 0.5B model (~398MB)...' }
+        });
+        modelPath = await LocalGGUFModelManager.downloadModel(
+          this.globalStoragePath,
+          (info) => {
+            webview.postMessage({
+              type: 'model_download_progress',
+              payload: info
+            });
+          }
+        );
+        const sizeMb = LocalGGUFModelManager.getModelSizeMb(this.globalStoragePath);
+        webview.postMessage({
+          type: 'model_status',
+          payload: { isDownloaded: true, sizeMb }
+        });
+      }
+
+      webview.postMessage({
+        type: 'analysis_status',
+        payload: { status: 'analyzing', message: initialStatus }
+      });
+
+      const startTime = performance.now();
+
+      // Purge any stale ignored files from DB and in-memory graph
+      await purgeIgnoredFiles(this.db, this.graphCache);
+
+      // 1. Build FileGraph from in-memory graph
+      const fileGraph = buildFileGraph(this.graphCache.graph);
+
+      // 2. Run Tier 0 Graphology Assertions
+      const tier0 = runTier0Assertions(fileGraph);
+
+      let communities: Record<string, number> = {};
+      try {
+        communities = typeof louvain === 'function' ? louvain(fileGraph) : {};
+      } catch {
+        for (const f of fileGraph.nodes()) communities[f] = 0;
+      }
+
+      let totalSymbols = 0;
+      fileGraph.forEachNode((_, attrs: any) => {
+        totalSymbols += attrs.symbolCount || 0;
+      });
+
+      // 3. Run the modular 3-Step Architecture Rule Engine
+      const hotspots = await runRuleEngine(
+        fileGraph,
+        this.graphCache.graph,
+        communities,
+        tier0.fileMetrics,
+        {
+          rules,
+          roleClassifier: this.roleClassifier,
+          validateWithSlm: async (candidatesWithPrompts) => {
+            return await validateCandidatesWithLlama(
+              modelPath,
+              candidatesWithPrompts,
+              (msg) => {
+                webview.postMessage({
+                  type: 'analysis_status',
+                  payload: { status: 'analyzing', message: msg }
+                });
+              }
+            );
+          },
+          onStatus: (msg) => {
+            webview.postMessage({
+              type: 'analysis_status',
+              payload: { status: 'analyzing', message: msg }
+            });
+          }
+        }
+      );
+
+      const elapsedMs = Math.round(performance.now() - startTime);
+
+      webview.postMessage({
+        type: 'hotspots_result',
+        payload: {
+          hotspots,
+          stats: {
+            fileCount: fileGraph.order,
+            folderCount: tier0.folderFeatureVectors.size,
+            symbolCount: totalSymbols,
+            durationMs: elapsedMs
+          }
+        }
+      });
+    } catch (err: any) {
+      vscode.window.showErrorMessage(`Analysis failed: ${err.message}`);
+      webview.postMessage({
+        type: 'hotspots_error',
+        payload: err?.message || String(err)
+      });
     }
   }
 

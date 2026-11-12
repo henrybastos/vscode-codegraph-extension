@@ -78,6 +78,40 @@ export class DeadAbstractionRule implements ArchitectureRule {
       return true;
     }
 
+    // 4. Ignore Data Transfer Objects (DTOs), ViewModels, Schemas, and Event contracts
+    if (
+      name.endsWith('Dto') ||
+      name.endsWith('DTO') ||
+      name.endsWith('Vo') ||
+      name.endsWith('VO') ||
+      name.endsWith('Event') ||
+      name.endsWith('Schema') ||
+      name.endsWith('Payload') ||
+      p.includes('/dto/') ||
+      p.includes('/dtos/') ||
+      p.endsWith('.dto.ts') ||
+      p.endsWith('.contract.ts') ||
+      p.endsWith('.schema.ts') ||
+      p.endsWith('.event.ts')
+    ) {
+      return true;
+    }
+
+    // 5. Ignore Domain Entities, Models, and Types
+    if (
+      name.endsWith('Entity') ||
+      name.endsWith('Model') ||
+      p.includes('/entities/') ||
+      p.includes('/entity/') ||
+      p.includes('/models/') ||
+      p.endsWith('.entity.ts') ||
+      p.endsWith('.model.ts') ||
+      p.includes('/types/') ||
+      p.includes('/interfaces/')
+    ) {
+      return true;
+    }
+
     return false;
   }
 }

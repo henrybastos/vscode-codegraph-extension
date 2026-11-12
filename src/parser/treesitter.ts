@@ -126,11 +126,27 @@ export function parseFileAst(
                   const importedName = item.childForFieldName('name')?.text;
                   if (importedName) {
                     importMap.set(importedName, moduleSpecifier);
+                    if (moduleSpecifier) {
+                      const targetId = resolveTargetId(importedName, filePath, importMap);
+                      edges.push({
+                        sourceId: filePath,
+                        targetId,
+                        relation: isTypeOnly ? 'IMPORTS_TYPE' : 'IMPORTS'
+                      });
+                    }
                   }
                 }
               }
             } else if (spec.type === 'identifier') {
               importMap.set(spec.text, moduleSpecifier);
+              if (moduleSpecifier) {
+                const targetId = resolveTargetId(spec.text, filePath, importMap);
+                edges.push({
+                  sourceId: filePath,
+                  targetId,
+                  relation: isTypeOnly ? 'IMPORTS_TYPE' : 'IMPORTS'
+                });
+              }
             }
           }
         }
@@ -285,25 +301,40 @@ export function parseFileAst(
 
     const activeSymbol = detectedSymbol || currentParentSymbol;
 
-    // Second pass inside function/method bodies: extract CALLS edges
-    if (activeSymbol && (type === 'call_expression')) {
-      const functionNode = node.childForFieldName('function');
-      if (functionNode) {
-        const fullCallee = functionNode.text;
-        const isThis = fullCallee.startsWith('this.');
-        let calleeName = fullCallee;
-        if (calleeName.includes('.')) {
-          const parts = calleeName.split('.');
-          calleeName = parts[parts.length - 1];
+    // Second pass inside function/method/class bodies: extract CALLS, DEPENDS_ON, and type references
+    if (activeSymbol) {
+      if (type === 'call_expression') {
+        const functionNode = node.childForFieldName('function');
+        if (functionNode) {
+          const fullCallee = functionNode.text;
+          const isThis = fullCallee.startsWith('this.');
+          let calleeName = fullCallee;
+          if (calleeName.includes('.')) {
+            const parts = calleeName.split('.');
+            calleeName = parts[parts.length - 1];
+          }
+          if (calleeName && calleeName.length > 1 && !isJsBuiltin(calleeName)) {
+            if (isThis) {
+              edges.push({
+                sourceId: activeSymbol.id,
+                targetId: `${filePath}::${calleeName}`,
+                relation: 'CALLS_LOCAL'
+              });
+            } else {
+              const targetId = resolveTargetId(calleeName, filePath, importMap);
+              edges.push({
+                sourceId: activeSymbol.id,
+                targetId,
+                relation: 'CALLS'
+              });
+            }
+          }
         }
-        if (calleeName && calleeName.length > 1 && !isJsBuiltin(calleeName)) {
-          if (isThis) {
-            edges.push({
-              sourceId: activeSymbol.id,
-              targetId: `${filePath}::${calleeName}`,
-              relation: 'CALLS_LOCAL'
-            });
-          } else {
+      } else if (type === 'new_expression') {
+        const constructorNode = node.childForFieldName('constructor');
+        if (constructorNode) {
+          const calleeName = constructorNode.text.replace(/^.*\./, '');
+          if (calleeName && calleeName.length > 1 && !isJsBuiltin(calleeName) && !isTsPrimitive(calleeName)) {
             const targetId = resolveTargetId(calleeName, filePath, importMap);
             edges.push({
               sourceId: activeSymbol.id,
@@ -311,6 +342,16 @@ export function parseFileAst(
               relation: 'CALLS'
             });
           }
+        }
+      } else if (type === 'type_identifier') {
+        const typeName = node.text;
+        if (typeName && typeName.length > 1 && !isTsPrimitive(typeName) && !isJsBuiltin(typeName)) {
+          const targetId = resolveTargetId(typeName, filePath, importMap);
+          edges.push({
+            sourceId: activeSymbol.id,
+            targetId,
+            relation: 'DEPENDS_ON'
+          });
         }
       }
     }
@@ -397,4 +438,17 @@ const JS_BUILTINS = new Set([
 
 function isJsBuiltin(name: string): boolean {
   return JS_BUILTINS.has(name);
+}
+
+const TS_PRIMITIVES = new Set([
+  'string', 'number', 'boolean', 'any', 'void', 'unknown', 'never',
+  'null', 'undefined', 'symbol', 'bigint', 'object', 'Function',
+  'Record', 'Array', 'Promise', 'Partial', 'Readonly', 'Required',
+  'Pick', 'Omit', 'Exclude', 'Extract', 'NonNullable', 'Parameters',
+  'ConstructorParameters', 'ReturnType', 'InstanceType', 'Date',
+  'RegExp', 'Map', 'Set', 'WeakMap', 'WeakSet', 'Error', 'Uint8Array'
+]);
+
+function isTsPrimitive(name: string): boolean {
+  return TS_PRIMITIVES.has(name);
 }

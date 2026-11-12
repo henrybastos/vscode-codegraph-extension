@@ -13,8 +13,10 @@ export class FeatureEnvyRule implements ArchitectureRule {
     symbolGraph.forEachNode((fnNodeId, attrs: any) => {
       if (attrs?.kind !== 'function') return;
 
-      const fnFilePath: string = attrs.filePath || '';
+      const fnFilePath: string = (attrs.filePath || '').replace(/\\/g, '/');
       if (!fnFilePath) return;
+
+      const fnName: string = attrs.name || '';
 
       // Group outgoing calls by target file
       const externalCallsByFile = new Map<string, number>();
@@ -29,9 +31,22 @@ export class FeatureEnvyRule implements ArchitectureRule {
 
         if (edgeAttrs?.relation === 'CALLS') {
           const tgtAttrs: any = symbolGraph.hasNode(target) ? symbolGraph.getNodeAttributes(target) : null;
-          const tgtFile = tgtAttrs?.filePath || target.split('::')[0];
+          const tgtFile = (tgtAttrs?.filePath || target.split('::')[0]).replace(/\\/g, '/');
 
           if (tgtFile && tgtFile !== fnFilePath) {
+            const normFnDir = path.posix.dirname(fnFilePath).toLowerCase();
+            const normTgtDir = path.posix.dirname(tgtFile).toLowerCase();
+
+            // 2. If target is in a child handlers/ or usecases/ directory, it is modular handler delegation, not envy
+            if (normTgtDir.startsWith(normFnDir + '/handlers') || normTgtDir.startsWith(normFnDir + '/usecases')) {
+              return;
+            }
+
+            // 3. If target is a barrel file (index.ts/index.js), calls to multiple distinct handlers must not be lumped together
+            if (path.posix.basename(tgtFile).startsWith('index.')) {
+              return;
+            }
+
             const count = (externalCallsByFile.get(tgtFile) || 0) + weight;
             externalCallsByFile.set(tgtFile, count);
           } else {
@@ -43,6 +58,12 @@ export class FeatureEnvyRule implements ArchitectureRule {
       // Find if any single external file is called >= 4 times and outnumbers local calls
       for (const [targetFile, callCount] of externalCallsByFile.entries()) {
         if (callCount >= 4 && callCount > localCalls) {
+          const start = attrs.startLine || 1;
+          const end = attrs.endLine || start;
+          const fnLoc = end - start + 1;
+          const fanIn = symbolGraph.inDegree(fnNodeId);
+          const fanOut = symbolGraph.outDegree(fnNodeId);
+
           candidates.push({
             id: `feature-envy-${fnNodeId.replace(/[^a-zA-Z0-9]/g, '_')}`,
             ruleId: this.id,
@@ -52,8 +73,15 @@ export class FeatureEnvyRule implements ArchitectureRule {
             severity: 'medium',
             title: `Feature Envy: ${attrs.name}()`,
             description: `Function '${attrs.name}' makes ${callCount} calls to external module '${path.basename(targetFile)}' compared to ${localCalls} local calls, suggesting misplaced responsibility.`,
+            metrics: {
+              loc: fnLoc,
+              fanIn,
+              fanOut
+            },
             evidence: {
               functionName: attrs.name,
+              startLine: start,
+              endLine: end,
               targetFile,
               callCount,
               localCalls
@@ -66,30 +94,39 @@ export class FeatureEnvyRule implements ArchitectureRule {
     return candidates;
   }
 
-  shouldIgnore(candidate: FlaggedCandidate, _graph: DirectedGraph, _ctx: RuleContext): boolean {
-    const fnName = (candidate.evidence?.functionName || '').toLowerCase();
-    const filePath = candidate.path.toLowerCase();
+  async shouldIgnore(
+    candidate: FlaggedCandidate,
+    _graph: DirectedGraph,
+    ctx: RuleContext
+  ): Promise<boolean> {
+    const rawFnName = candidate.evidence?.functionName || candidate.evidence?.symbolName || '';
+    const normalizedPath = candidate.path.replace(/\\/g, '/');
+    const lowerPath = normalizedPath.toLowerCase();
 
-    // 1. Ignore test and mock files
-    if (filePath.endsWith('.spec.ts') || filePath.endsWith('.test.ts') || filePath.includes('/test/')) {
-      return true;
-    }
-
-    // 2. Ignore mapper, serializer, transformer functions
+    // 1. Fast deterministic filter (0ms): Ignore test and mock files before running ONNX
     if (
-      fnName.includes('todto') ||
-      fnName.includes('fromentity') ||
-      fnName.includes('map') ||
-      fnName.includes('serialize') ||
-      fnName.includes('deserialize') ||
-      fnName.includes('convert')
+      lowerPath.endsWith('.spec.ts') ||
+      lowerPath.endsWith('.test.ts') ||
+      lowerPath.includes('/test/') ||
+      lowerPath.includes('/__tests__/') ||
+      lowerPath.includes('/mock/') ||
+      lowerPath.includes('/__mocks__/')
     ) {
       return true;
     }
 
-    // 3. Ignore builders and factory patterns
-    if (fnName.startsWith('create') || fnName.startsWith('build') || fnName.startsWith('make')) {
-      return true;
+    // 2. Semantic ONNX Role Classification (~2-4ms):
+    // Replaces hardcoded checks for mappers, factories/builders, and event routers/webhooks
+    if (ctx.roleClassifier && ctx.roleClassifier.isInitialized()) {
+      const classification = await ctx.roleClassifier.classify(rawFnName, normalizedPath);
+
+      // Attach inferred role and confidence to candidate evidence
+      if (candidate.evidence) {
+        candidate.evidence.inferredRole = classification.role;
+        candidate.evidence.roleConfidence = classification.score;
+      }
+
+      return classification.shouldIgnore;
     }
 
     return false;
@@ -108,3 +145,4 @@ Local Scope Calls: ${local}
 Question: Is this function a legitimate data mapper, transformer, or orchestrator (valid), or does it exhibit Feature Envy with business logic that should be moved closer to ${target} (violation)?`;
   }
 }
+

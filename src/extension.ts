@@ -5,6 +5,7 @@ import { CodeGraphCache } from './graph/graph-manager.js';
 import { initTreeSitter } from './parser/treesitter.js';
 import { WorkspaceIndexer, isIgnoredPath, purgeIgnoredFiles } from './parser/watcher.js';
 import { OpenRouterClient } from './ai/openrouter.js';
+import { SymbolRoleClassifier } from './ai/symbol-classifier.js';
 import { CodeGraphWebviewProvider } from './webview/provider.js';
 
 let indexer: WorkspaceIndexer | null = null;
@@ -38,7 +39,14 @@ export async function activate(context: vscode.ExtensionContext) {
     aiClient.setApiKey(savedKey);
   }
 
-  // 5. Indexer instance
+  // 5. Initialize MiniLM int8 ONNX Symbol Role Classifier
+  const roleClassifier = new SymbolRoleClassifier();
+  const minilmDir = path.join(context.globalStorageUri.fsPath, 'models', 'minilm');
+  roleClassifier.init(minilmDir).catch((err) => {
+    console.warn('[CodeGraph] MiniLM role classifier background init warning:', err);
+  });
+
+  // 6. Indexer instance
   indexer = new WorkspaceIndexer(db, graphCache);
 
   const reindexWorkspace = async (force: boolean = false) => {
@@ -79,6 +87,10 @@ export async function activate(context: vscode.ExtensionContext) {
         }
 
         console.log(`[CodeGraph] Indexing complete: ${indexedCount} files processed, ${totalSymbols} symbols discovered.`);
+        // Re-hydrate the full in-memory graph from SQLite to resolve all cross-file forward reference edges!
+        await graphCache.hydrate(db);
+        await purgeIgnoredFiles(db, graphCache);
+
         vscode.window.showInformationMessage(
           `CodeGraph: Indexed ${indexedCount} files (${totalSymbols} symbols).`
         );
@@ -88,14 +100,15 @@ export async function activate(context: vscode.ExtensionContext) {
     );
   };
 
-  // 6. Register Webview View Provider
+  // 7. Register Webview View Provider
   provider = new CodeGraphWebviewProvider(
     context.extensionUri,
     context.globalStorageUri.fsPath,
     db,
     graphCache,
     aiClient,
-    reindexWorkspace
+    reindexWorkspace,
+    roleClassifier
   );
 
   context.subscriptions.push(

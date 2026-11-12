@@ -54,7 +54,11 @@ const SLM_VALIDATION_SCHEMA = {
   type: 'object',
   properties: {
     isViolation: { type: 'boolean' },
-    reason: { type: 'string' }
+    reason: { type: 'string' },
+    suggestedFiles: {
+      type: 'array',
+      items: { type: 'string' }
+    }
   },
   required: ['isViolation', 'reason']
 } as const;
@@ -201,8 +205,8 @@ export async function validateCandidatesWithLlama(
   modelPath: string,
   candidatesWithPrompts: Array<{ candidate: any; prompt: string }>,
   onStatus?: (msg: string) => void
-): Promise<Map<string, { isViolation: boolean; reason?: string }>> {
-  const results = new Map<string, { isViolation: boolean; reason?: string }>();
+): Promise<Map<string, { isViolation: boolean; reason?: string; suggestedFiles?: string[] }>> {
+  const results = new Map<string, { isViolation: boolean; reason?: string; suggestedFiles?: string[] }>();
   if (candidatesWithPrompts.length === 0) return results;
 
   const { getLlama, LlamaChatSession, LlamaJsonSchemaGrammar } = await getLlamaModule();
@@ -229,9 +233,10 @@ export async function validateCandidatesWithLlama(
   try {
     const grammar = new LlamaJsonSchemaGrammar(llamaInstance, SLM_VALIDATION_SCHEMA as any);
 
-    const systemPrompt = `You are a strict, senior software architect reviewing candidate architecture violations.
+    const systemPrompt = `You are a strict, senior software architect reviewing candidate architecture violations and decomposition recommendations.
 Carefully decide if the situation is a true architectural violation or a valid design choice.
-Respond strictly in JSON matching the schema: {"isViolation": boolean, "reason": string}.`;
+When decomposition is warranted, propose concise target file paths (e.g. "usecases/create-order.usecase.ts").
+Respond strictly in JSON matching the schema: {"isViolation": boolean, "reason": string, "suggestedFiles": string[]}.`;
 
     const batch = candidatesWithPrompts.slice(0, 5);
     let index = 0;
@@ -248,18 +253,19 @@ Respond strictly in JSON matching the schema: {"isViolation": boolean, "reason":
         systemPrompt
       });
 
-      const userPrompt = `${item.prompt}\n\nIs this a real architectural violation? Output JSON with isViolation and reason.`;
+      const userPrompt = `${item.prompt}\n\nIs this a real architectural violation? Output JSON with isViolation, reason, and optional suggestedFiles.`;
 
       try {
         const rawResponse = await session.prompt(userPrompt, {
           grammar,
-          maxTokens: 120,
+          maxTokens: 150,
           temperature: 0.1
         });
         const parsed = JSON.parse(rawResponse);
         results.set(item.candidate.id, {
           isViolation: Boolean(parsed.isViolation),
-          reason: typeof parsed.reason === 'string' ? parsed.reason : undefined
+          reason: typeof parsed.reason === 'string' ? parsed.reason : undefined,
+          suggestedFiles: Array.isArray(parsed.suggestedFiles) ? parsed.suggestedFiles : undefined
         });
       } catch (err) {
         console.warn('[validateCandidatesWithLlama] Failed to validate item:', item.candidate.id, err);
@@ -334,8 +340,10 @@ You analyze architectural code metrics and structural concerns in TypeScript/Jav
 
 CRITICAL INSTRUCTIONS:
 - Analyze the real files, classes, functions, and architectural layers described in the context.
-- Static analysis metrics (e.g. "dependency clusters", "graph communities", "fan-in/fan-out", "instability") are mathematical measurements of the dependency graph; they are NOT domain classes or features in the user's project. Never invent or propose classes, interfaces, or modules named "GraphCommunity" or graph data structures.
-- Focus exclusively on the real domain concepts (e.g. users, authentication, orders, use cases) present in the actual files.
+- Domain Realism: If a module handles webhooks, payments, or third-party integrations (e.g. Stripe, BullMQ queues, notifications), depending on external SDKs, queues, and database repositories is EXPECTED and correct. Do NOT claim that a payment or webhook service shouldn't depend on payment SDKs or databases.
+- Event Routers / Dispatchers: Functions that dispatch incoming events via switch/if statements (e.g. processEvent) to sub-handlers are legitimate routing patterns, not Feature Envy.
+- Static analysis metrics (e.g. "dependency clusters", "graph communities", "fan-in/fan-out", "instability") are mathematical measurements of the dependency graph; they are NOT domain classes. Never invent classes named "GraphCommunity" or graph data structures.
+- Focus strictly on practical, non-destructive refactorings tailored to the real code provided. Avoid repetitive boilerplate or circular steps.
 
 Format your review in clean Markdown with:
 1. 🔍 **Diagnosis & Smells** (Identify the primary architectural liability)

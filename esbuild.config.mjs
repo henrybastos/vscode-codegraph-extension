@@ -45,7 +45,7 @@ const buildOpts = {
   platform: 'node',
   target: 'node22',
   outfile: 'dist/extension.js',
-  external: ['vscode', 'node:sqlite', 'node-llama-cpp'],
+  external: ['vscode', 'node:sqlite', 'node-llama-cpp', 'onnxruntime-node', '@huggingface/transformers'],
   sourcemap: true,
   logLevel: 'info'
 };
@@ -59,7 +59,7 @@ if (fs.existsSync('src/test/pipeline.test.ts')) {
     platform: 'node',
     target: 'node22',
     outfile: 'dist/test/pipeline.test.js',
-    external: ['vscode', 'node:sqlite'],
+    external: ['vscode', 'node:sqlite', 'node-llama-cpp', 'onnxruntime-node', '@huggingface/transformers'],
     sourcemap: true
   });
   console.log('Built dist/test/pipeline.test.js');

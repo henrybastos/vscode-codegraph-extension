@@ -15,10 +15,12 @@
       | 'Domain Tangling'
       | 'Feature Envy'
       | 'Dead Abstraction'
+      | 'API Decomposition'
       | 'Architecture Tip';
     severity: 'critical' | 'high' | 'medium' | 'info';
     title: string;
     description: string;
+    suggestedFiles?: string[];
     metrics?: {
       loc?: number;
       fanIn?: number;
@@ -111,6 +113,13 @@
           title: 'text-purple-400',
           sub: 'text-purple-400/50',
           btn: 'text-purple-400 bg-purple-400/5 hover:bg-purple-400/10'
+        };
+      case 'API Decomposition':
+        return {
+          container: 'border-cyan-400/50 bg-cyan-200/5',
+          title: 'text-cyan-400',
+          sub: 'text-cyan-400/50',
+          btn: 'text-cyan-400 bg-cyan-400/5 hover:bg-cyan-400/10'
         };
       case 'Architecture Tip':
       case 'Feature Envy':
@@ -292,6 +301,26 @@
           </div>
 
           <p class="text-xs text-[var(--vscode-foreground)] leading-relaxed mt-1">{item.description}</p>
+
+          <!-- Suggested Decomposition File Chips -->
+          {#if item.suggestedFiles && item.suggestedFiles.length > 0}
+            <div class="mt-2.5 flex flex-col gap-1.5 p-2 rounded bg-[var(--vscode-editor-background,#1e1e1e)]/60 border border-[var(--vscode-widget-border,#333)]/50">
+              <div class="flex items-center gap-1.5 text-[11px] font-medium text-cyan-400">
+                <span>💡</span>
+                <span>Suggested Extractions:</span>
+              </div>
+              <div class="flex flex-wrap gap-1.5">
+                {#each item.suggestedFiles as filePath}
+                  <span
+                    class="font-mono text-[10px] px-2 py-0.5 rounded bg-cyan-500/10 text-cyan-300 border border-cyan-500/20 select-all"
+                    title="Suggested extracted file: {filePath}"
+                  >
+                    {filePath}
+                  </span>
+                {/each}
+              </div>
+            </div>
+          {/if}
 
           <!-- Inline Analysis Expansion Section -->
           {#if analysis}
