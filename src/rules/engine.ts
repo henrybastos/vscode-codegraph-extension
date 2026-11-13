@@ -135,6 +135,7 @@ export async function runRuleEngine(
 function candidateToHotspot(c: FlaggedCandidate): HotspotItem {
   return {
     id: c.id,
+    ruleId: c.ruleId,
     type: c.type,
     path: c.path,
     category: c.category as any,
@@ -142,6 +143,7 @@ function candidateToHotspot(c: FlaggedCandidate): HotspotItem {
     title: c.title,
     description: c.description,
     suggestedFiles: c.suggestedFiles || c.evidence?.suggestedFiles,
+    evidence: c.evidence,
     metrics: c.metrics
       ? {
           loc: c.metrics.loc,

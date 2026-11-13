@@ -547,4 +547,86 @@ test('11. SymbolRoleClassifier & MiniLM ONNX Semantic Role Classification', asyn
   assert.strictEqual(sliceFolderRes.role, 'vertical_feature_slice');
 });
 
+test('12. Per-rule Targeted Analysis (CodeGraph + Graphology + Dedicated Prompts)', async () => {
+  const { db, rawDb } = initSqliteDb(':memory:');
+  const fileGraph = new DirectedGraph();
+  const symbolGraph = new DirectedGraph();
+
+  // Setup synthetic fileGraph covering all 8 rule scenarios
+  fileGraph.addNode('src/a.ts', { layer: 'domain', loc: 120, symbolCount: 4 });
+  fileGraph.addNode('src/b.ts', { layer: 'domain', loc: 90, symbolCount: 3 });
+  fileGraph.addEdge('src/a.ts', 'src/b.ts', { weight: 3 });
+  fileGraph.addEdge('src/b.ts', 'src/a.ts', { weight: 1 });
+
+  fileGraph.addNode('src/presentation/view.tsx', { layer: 'presentation', loc: 100, symbolCount: 2 });
+  fileGraph.addNode('src/infra/user.repo.ts', { layer: 'infrastructure', loc: 80, symbolCount: 3 });
+  fileGraph.addNode('src/usecases/create-user.usecase.ts', { layer: 'application', loc: 60, symbolCount: 2 });
+  fileGraph.addEdge('src/presentation/view.tsx', 'src/infra/user.repo.ts', { weight: 2 });
+
+  fileGraph.addNode('src/god.ts', { layer: 'domain', loc: 500, symbolCount: 4 });
+  fileGraph.addNode('src/mixed/ctrl.controller.ts', { layer: 'presentation', loc: 60, symbolCount: 1 });
+  fileGraph.addNode('src/mixed/repo.repository.ts', { layer: 'infrastructure', loc: 60, symbolCount: 1 });
+  fileGraph.addEdge('src/mixed/ctrl.controller.ts', 'src/mixed/repo.repository.ts', { weight: 1 });
+
+  fileGraph.addNode('src/core.ts', { layer: 'domain', loc: 200, symbolCount: 5 });
+  for (let i = 0; i < 4; i++) {
+    const caller = `src/caller${i}.ts`;
+    fileGraph.addNode(caller, { layer: 'application', loc: 30, symbolCount: 1 });
+    fileGraph.addEdge(caller, 'src/core.ts', { weight: 1 });
+  }
+  for (let i = 0; i < 7; i++) {
+    const dep = `src/dep${i}.ts`;
+    fileGraph.addNode(dep, { layer: 'infrastructure', loc: 30, symbolCount: 1 });
+    fileGraph.addEdge('src/core.ts', dep, { weight: 1 });
+  }
+
+  // Setup synthetic symbolGraph
+  symbolGraph.addNode('src/a.ts::fnA', { filePath: 'src/a.ts', name: 'fnA', kind: 'function', startLine: 5, endLine: 20 });
+  symbolGraph.addNode('src/b.ts::fnB', { filePath: 'src/b.ts', name: 'fnB', kind: 'function', startLine: 10, endLine: 25 });
+  symbolGraph.addEdge('src/a.ts::fnA', 'src/b.ts::fnB', { relation: 'CALLS' });
+  symbolGraph.addEdge('src/b.ts::fnB', 'src/a.ts::fnA', { relation: 'CALLS' });
+
+  symbolGraph.addNode('src/presentation/view.tsx::UserView', { filePath: 'src/presentation/view.tsx', name: 'UserView', kind: 'function', startLine: 12, endLine: 40 });
+  symbolGraph.addNode('src/infra/user.repo.ts::findUser', { filePath: 'src/infra/user.repo.ts', name: 'findUser', kind: 'function', startLine: 5, endLine: 15 });
+  symbolGraph.addEdge('src/presentation/view.tsx::UserView', 'src/infra/user.repo.ts::findUser', { relation: 'CALLS' });
+
+  symbolGraph.addNode('src/god.ts::billingFn', { filePath: 'src/god.ts', name: 'billingFn', kind: 'function', startLine: 1, endLine: 50 });
+  symbolGraph.addNode('src/god.ts::authFn', { filePath: 'src/god.ts', name: 'authFn', kind: 'function', startLine: 51, endLine: 100 });
+  symbolGraph.addEdge('src/god.ts::billingFn', 'src/infra/user.repo.ts::findUser', { relation: 'CALLS' });
+
+  symbolGraph.addNode('src/envy.ts::calcInvoice', { filePath: 'src/envy.ts', name: 'calcInvoice', kind: 'function', startLine: 1, endLine: 30 });
+  symbolGraph.addEdge('src/envy.ts::calcInvoice', 'src/infra/user.repo.ts::findUser', { relation: 'CALLS' });
+
+  symbolGraph.addNode('src/dead.ts::legacyHelper', { filePath: 'src/dead.ts', name: 'legacyHelper', kind: 'function', startLine: 1, endLine: 15, summary: '[exported]' });
+  symbolGraph.addEdge('src/dead.ts::legacyHelper', 'src/infra/user.repo.ts::findUser', { relation: 'CALLS' });
+
+  symbolGraph.addNode('src/billing.controller.ts::createInvoice', { filePath: 'src/billing.controller.ts', name: 'createInvoice', kind: 'function', startLine: 10, endLine: 55 });
+  symbolGraph.addEdge('src/billing.controller.ts::createInvoice', 'src/infra/user.repo.ts::findUser', { relation: 'CALLS' });
+
+  const sampleItems: Record<string, any> = {
+    'circular-coupling': { id: 'c1', ruleId: 'circular-coupling', type: 'file', path: 'src/a.ts', category: 'Circular Dependency', severity: 'critical', title: 'Cycle', description: 'a -> b -> a', evidence: { cycle: ['src/a.ts', 'src/b.ts'] } },
+    'layer-bypass': { id: 'c2', ruleId: 'layer-bypass', type: 'file', path: 'src/presentation/view.tsx', category: 'Layer Bypass', severity: 'high', title: 'Bypass', description: 'bypass', evidence: { sourceLayer: 'presentation', target: 'src/infra/user.repo.ts' } },
+    'god-file': { id: 'c3', ruleId: 'god-file', type: 'file', path: 'src/god.ts', category: 'God File', severity: 'high', title: 'God', description: 'god', metrics: { loc: 500, fanIn: 1, fanOut: 2 } },
+    'mixed-concerns': { id: 'c4', ruleId: 'mixed-concerns', type: 'folder', path: 'src/mixed', category: 'Mixed Concerns', severity: 'medium', title: 'Mixed', description: 'mixed' },
+    'unstable-foundation': { id: 'c5', ruleId: 'unstable-foundation', type: 'file', path: 'src/core.ts', category: 'Unstable Foundation', severity: 'high', title: 'Unstable', description: 'sdp', metrics: { fanIn: 4, fanOut: 7, instability: 0.64 } },
+    'feature-envy': { id: 'c6', ruleId: 'feature-envy', type: 'file', path: 'src/envy.ts', category: 'Feature Envy', severity: 'medium', title: 'Envy', description: 'envy', evidence: { functionName: 'calcInvoice', startLine: 1, endLine: 30, targetFile: 'src/infra/user.repo.ts', callCount: 4, localCalls: 0 } },
+    'dead-abstraction': { id: 'c7', ruleId: 'dead-abstraction', type: 'file', path: 'src/dead.ts', category: 'Dead Abstraction', severity: 'info', title: 'Dead', description: 'dead', evidence: { symbolName: 'legacyHelper' } },
+    'api-decomposition': { id: 'c8', ruleId: 'api-decomposition', type: 'file', path: 'src/billing.controller.ts', category: 'API Decomposition', severity: 'high', title: 'Fat Controller', description: 'fat', metrics: { loc: 220 }, suggestedFiles: ['usecases/create-invoice.usecase.ts'], evidence: { pattern: 'EXTRACT_USECASES' } }
+  };
+
+  for (const rule of DEFAULT_RULES) {
+    assert.ok(typeof rule.buildTargetedAnalysis === 'function', `Rule '${rule.id}' must implement buildTargetedAnalysis`);
+    const item = sampleItems[rule.id];
+    assert.ok(item, `Missing test item for rule '${rule.id}'`);
+
+    const report = await rule.buildTargetedAnalysis!({ item, fileGraph, symbolGraph, db });
+    assert.ok(report.systemPrompt.includes('Current Symptoms'), `${rule.id} systemPrompt must request Current Symptoms`);
+    assert.ok(report.systemPrompt.includes('Graph & Symbol Relations'), `${rule.id} systemPrompt must request Graph & Symbol Relations`);
+    assert.ok(report.systemPrompt.includes('How to Solve It'), `${rule.id} systemPrompt must request How to Solve It`);
+    assert.ok(report.userPrompt.includes(item.path), `${rule.id} userPrompt must include target path`);
+  }
+
+  rawDb.close();
+});
+
 

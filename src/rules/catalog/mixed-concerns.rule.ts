@@ -1,6 +1,15 @@
 import type { DirectedGraph } from 'graphology';
-import { isTestOrMockPath, type ArchitectureRule, type FlaggedCandidate, type RuleContext } from '../types.js';
+import {
+  isTestOrMockPath,
+  type ArchitectureRule,
+  type FlaggedCandidate,
+  type RuleContext,
+  type TargetedAnalysisContext,
+  type TargetedAnalysisReportInput
+} from '../types.js';
 import * as path from 'node:path';
+import { classifyLayer } from '../../graph/assertions.js';
+import { formatTargetedPrompts, getFileSymbols, normalizeRelPath } from './targeted-helpers.js';
 
 export class MixedConcernsRule implements ArchitectureRule {
   public readonly id = 'mixed-concerns';
@@ -121,5 +130,61 @@ Files inside: ${fileList.join(', ')}
 Layers detected: ${layers.join(', ')}
 
 Question: Is this folder a well-structured Vertical Feature Slice / Cohesive Module (valid), or does it randomly mix unrelated concerns and architecture layers that should be separated (violation)?`;
+  }
+
+  buildTargetedAnalysis(ctx: TargetedAnalysisContext): TargetedAnalysisReportInput {
+    const { item, fileGraph, symbolGraph } = ctx;
+    const normFolder = normalizeRelPath(item.path).toLowerCase();
+
+    const folderFiles = fileGraph
+      .nodes()
+      .filter((f) => normalizeRelPath(path.dirname(f)).toLowerCase() === normFolder);
+
+    const byLayer = new Map<string, string[]>();
+    const intraCrossLayerEdges: string[] = [];
+    const folderSet = new Set(folderFiles);
+
+    for (const file of folderFiles) {
+      const layer = String(fileGraph.getNodeAttribute(file, 'layer') || classifyLayer(file));
+      const list = byLayer.get(layer) || [];
+      const syms = getFileSymbols(symbolGraph, file).slice(0, 4).map((s) => s.name);
+      list.push(`${path.basename(file)}${syms.length ? ` [${syms.join(', ')}]` : ''}`);
+      byLayer.set(layer, list);
+
+      fileGraph.forEachOutEdge(file, (_e, _attrs, _s, tgt) => {
+        if (folderSet.has(tgt)) {
+          const tgtLayer = String(fileGraph.getNodeAttribute(tgt, 'layer') || classifyLayer(tgt));
+          if (tgtLayer !== layer) {
+            intraCrossLayerEdges.push(`${path.basename(file)} (${layer}) -> ${path.basename(tgt)} (${tgtLayer})`);
+          }
+        }
+      });
+    }
+
+    const layerBreakdown = Array.from(byLayer.entries())
+      .map(([layer, files]) => `- ${layer}: ${files.join(', ')}`)
+      .join('\n');
+
+    const promptInput = formatTargetedPrompts(
+      'Package & Folder Cohesion Architect',
+      [
+        'Evaluate whether this directory mixes unrelated architectural layers or is an intentional vertical feature slice.',
+        'Provide a concrete target folder structure (either layer subfolders or a clean feature-slice layout).'
+      ],
+      `Target Folder: ${item.path}
+Description: ${item.description}
+Files in Folder (${folderFiles.length}):
+
+Layer-by-Layer File & Symbol Breakdown:
+${layerBreakdown || '- No files resolved in fileGraph'}
+
+Intra-Folder Cross-Layer Edges:
+${intraCrossLayerEdges.slice(0, 12).join('\n') || 'None detected'}`
+    );
+
+    return {
+      ...promptInput,
+      targetedEvidence: { fileCount: folderFiles.length, layers: Array.from(byLayer.keys()) }
+    };
   }
 }

@@ -13,6 +13,7 @@ import { isIgnoredPath } from '../parser/watcher.js';
 
 export interface HotspotItem {
   id: string;
+  ruleId?: string;
   type: 'file' | 'folder';
   path: string;
   category:
@@ -31,6 +32,7 @@ export interface HotspotItem {
   title: string;
   description: string;
   suggestedFiles?: string[];
+  evidence?: Record<string, any>;
   metrics?: {
     loc?: number;
     fanIn?: number;

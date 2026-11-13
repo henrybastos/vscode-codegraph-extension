@@ -1,5 +1,8 @@
 import type { DirectedGraph } from 'graphology';
+import type { Kysely } from 'kysely';
 import type { SymbolRoleClassifier } from '../ai/symbol-classifier.js';
+import type { DatabaseSchema } from '../storage/types.js';
+import type { HotspotItem } from '../graph/assertions.js';
 
 const TEST_OR_MOCK_PATH_RE =
   /(?:^|\/)(?:__tests__|__mocks__|tests?|mocks?|fixtures?|e2e)(?:\/|$)|\.(?:spec|test|mock|e2e)\.[jt]sx?$/i;
@@ -69,6 +72,20 @@ export interface FlaggedCandidate {
   suggestedFiles?: string[];
 }
 
+export interface TargetedAnalysisContext {
+  item: HotspotItem;
+  fileGraph: DirectedGraph;
+  symbolGraph: DirectedGraph;
+  db: Kysely<DatabaseSchema>;
+  workspaceRoot?: string;
+}
+
+export interface TargetedAnalysisReportInput {
+  systemPrompt: string;
+  userPrompt: string;
+  targetedEvidence?: Record<string, any>;
+}
+
 export interface ArchitectureRule {
   id: string;
   name: string;
@@ -81,4 +98,9 @@ export interface ArchitectureRule {
 
   // Step 3: Short prompt for Qwen 0.5B to do the final sanity check (optional)
   buildSlmValidationPrompt?(candidate: FlaggedCandidate, ctx: RuleContext): string;
+
+  // Step 4: On-demand targeted deep analysis when user clicks Analyse
+  buildTargetedAnalysis?(
+    ctx: TargetedAnalysisContext
+  ): Promise<TargetedAnalysisReportInput> | TargetedAnalysisReportInput;
 }

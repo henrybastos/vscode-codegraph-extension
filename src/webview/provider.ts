@@ -397,6 +397,39 @@ export class CodeGraphWebviewProvider implements vscode.WebviewViewProvider {
         });
 
         const metrics = item.metrics || {};
+        const workspaceRoot = folders && folders.length > 0 ? folders[0].uri.fsPath : undefined;
+
+        const CATEGORY_TO_RULE_ID: Record<string, string> = {
+          'Circular Dependency': 'circular-coupling',
+          'Layer Bypass': 'layer-bypass',
+          'God File': 'god-file',
+          'Mixed Concerns': 'mixed-concerns',
+          'Unstable Foundation': 'unstable-foundation',
+          'Feature Envy': 'feature-envy',
+          'Dead Abstraction': 'dead-abstraction',
+          'API Decomposition': 'api-decomposition'
+        };
+        const resolvedRuleId = item.ruleId || CATEGORY_TO_RULE_ID[item.category];
+        const matchedRule = DEFAULT_RULES.find((r) => r.id === resolvedRuleId);
+
+        let customSystemPrompt: string | undefined;
+        let customUserPrompt: string | undefined;
+        if (matchedRule?.buildTargetedAnalysis) {
+          try {
+            const fileGraph = buildFileGraph(this.graphCache.graph);
+            const targeted = await matchedRule.buildTargetedAnalysis({
+              item,
+              fileGraph,
+              symbolGraph: this.graphCache.graph,
+              db: this.db,
+              workspaceRoot
+            });
+            customSystemPrompt = targeted.systemPrompt;
+            customUserPrompt = targeted.userPrompt;
+          } catch (err) {
+            console.warn(`[CodeGraph] Targeted analysis failed for rule '${resolvedRuleId}', using generic prompt:`, err);
+          }
+        }
 
         webview.postMessage({
           type: 'file_analysis_start',
@@ -419,7 +452,9 @@ export class CodeGraphWebviewProvider implements vscode.WebviewViewProvider {
               symbols: symbols.slice(0, 20),
               dependencies: Array.from(new Set(dependencies)).slice(0, 10),
               dependents: Array.from(new Set(dependents)).slice(0, 10),
-              sourceCodeSnippet
+              sourceCodeSnippet,
+              customSystemPrompt,
+              customUserPrompt
             },
             (chunk) => {
               webview.postMessage({

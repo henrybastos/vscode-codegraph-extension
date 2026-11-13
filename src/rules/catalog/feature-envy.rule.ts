@@ -1,6 +1,19 @@
 import type { DirectedGraph } from 'graphology';
-import { isTestOrMockPath, type ArchitectureRule, type FlaggedCandidate, type RuleContext } from '../types.js';
+import {
+  isTestOrMockPath,
+  type ArchitectureRule,
+  type FlaggedCandidate,
+  type RuleContext,
+  type TargetedAnalysisContext,
+  type TargetedAnalysisReportInput
+} from '../types.js';
 import * as path from 'node:path';
+import {
+  formatTargetedPrompts,
+  getFileSymbols,
+  normalizeRelPath,
+  readSnippet
+} from './targeted-helpers.js';
 
 export class FeatureEnvyRule implements ArchitectureRule {
   public readonly id = 'feature-envy';
@@ -135,6 +148,73 @@ External Target: ${target} (${calls} calls)
 Local Scope Calls: ${local}
 
 Question: Is this function a legitimate data mapper, transformer, or orchestrator (valid), or does it exhibit Feature Envy with business logic that should be moved closer to ${target} (violation)?`;
+  }
+
+  buildTargetedAnalysis(ctx: TargetedAnalysisContext): TargetedAnalysisReportInput {
+    const { item, symbolGraph, workspaceRoot } = ctx;
+    const fnName = item.evidence?.functionName || '';
+    const symbols = getFileSymbols(symbolGraph, item.path);
+    const focalSymbol =
+      symbols.find((s) => s.name === fnName) ||
+      symbols.find((s) => s.kind === 'function');
+
+    const startLine = item.evidence?.startLine || focalSymbol?.startLine;
+    const endLine = item.evidence?.endLine || focalSymbol?.endLine;
+
+    const externalCalls = new Map<string, string[]>();
+    const localCalls: string[] = [];
+
+    if (focalSymbol && symbolGraph.hasNode(focalSymbol.id)) {
+      const normFocalFile = normalizeRelPath(item.path).toLowerCase();
+      symbolGraph.forEachOutEdge(focalSymbol.id, (_e, edgeAttrs: any, _s, tgt) => {
+        const tgtAttrs: any = symbolGraph.hasNode(tgt) ? symbolGraph.getNodeAttributes(tgt) : null;
+        const tgtFile = normalizeRelPath(tgtAttrs?.filePath || tgt.split('::')[0]);
+        const tgtName = tgtAttrs?.name || tgt;
+
+        if (edgeAttrs?.relation === 'CALLS_LOCAL' || tgtFile.toLowerCase() === normFocalFile) {
+          localCalls.push(tgtName);
+        } else if (tgtFile) {
+          const list = externalCalls.get(tgtFile) || [];
+          list.push(tgtName);
+          externalCalls.set(tgtFile, list);
+        }
+      });
+    }
+
+    const externalBreakdown = Array.from(externalCalls.entries())
+      .sort((a, b) => b[1].length - a[1].length)
+      .slice(0, 6)
+      .map(([file, calls]) => `- ${file} (${calls.length} calls): ${Array.from(new Set(calls)).slice(0, 8).join(', ')}`)
+      .join('\n');
+
+    const snippet = readSnippet(workspaceRoot, item.path, startLine, endLine, 120);
+
+    const promptInput = formatTargetedPrompts(
+      'Object-Oriented Design & Coupling Refactoring Specialist',
+      [
+        'Domain Realism: Webhook/event dispatchers or service orchestrators calling multiple domain handlers/SDKs are valid orchestrators—if this is one, state so clearly instead of forcing artificial moves.',
+        'Otherwise, recommend Move Method or Extract Collaborator toward the heavily envied target module.'
+      ],
+      `Target Function: ${fnName || focalSymbol?.name || 'unknown'} in ${item.path} (L${startLine ?? '?'}-L${endLine ?? '?'})
+Envied Target: ${item.evidence?.targetFile || 'See external calls below'}
+Call Ratio: ${item.evidence?.callCount ?? 'N/A'} calls to target vs ${item.evidence?.localCalls ?? localCalls.length} local calls
+
+External Calls by Target Module:
+${externalBreakdown || '- None resolved in symbolGraph'}
+
+Local Calls: ${Array.from(new Set(localCalls)).slice(0, 10).join(', ') || 'None'}
+
+${snippet ? `Focal Function Source:\n\`\`\`typescript\n${snippet}\n\`\`\`` : ''}`
+    );
+
+    return {
+      ...promptInput,
+      targetedEvidence: {
+        functionName: fnName || focalSymbol?.name,
+        externalTargets: Array.from(externalCalls.keys()),
+        localCallCount: localCalls.length
+      }
+    };
   }
 }
 

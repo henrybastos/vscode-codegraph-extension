@@ -3,6 +3,7 @@
 
   export interface HotspotItem {
     id: string;
+    ruleId?: string;
     type: 'file' | 'folder';
     path: string;
     category:
@@ -21,6 +22,7 @@
     title: string;
     description: string;
     suggestedFiles?: string[];
+    evidence?: Record<string, any>;
     metrics?: {
       loc?: number;
       fanIn?: number;

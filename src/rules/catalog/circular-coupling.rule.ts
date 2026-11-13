@@ -1,9 +1,21 @@
 import type { DirectedGraph } from 'graphology';
-import type { ArchitectureRule, FlaggedCandidate, RuleContext } from '../types.js';
+import type {
+  ArchitectureRule,
+  FlaggedCandidate,
+  RuleContext,
+  TargetedAnalysisContext,
+  TargetedAnalysisReportInput
+} from '../types.js';
 import * as path from 'node:path';
 // @ts-ignore
 import dag from 'graphology-dag';
 import { detectCyclesInSubgraph } from '../../graph/metrics.js';
+import {
+  formatTargetedPrompts,
+  getCrossFileSymbolRelations,
+  readSnippet,
+  resolveFileGraphNode
+} from './targeted-helpers.js';
 
 export class CircularCouplingRule implements ArchitectureRule {
   public readonly id = 'circular-coupling';
@@ -74,5 +86,60 @@ export class CircularCouplingRule implements ArchitectureRule {
     }
 
     return false;
+  }
+
+  buildTargetedAnalysis(ctx: TargetedAnalysisContext): TargetedAnalysisReportInput {
+    const { item, fileGraph, symbolGraph, workspaceRoot } = ctx;
+    const resolvedLead = resolveFileGraphNode(fileGraph, item.path) || item.path;
+
+    let cycle: string[] = Array.isArray(item.evidence?.cycle) ? [...item.evidence.cycle] : [];
+    if (cycle.length === 0 && fileGraph.hasNode(resolvedLead)) {
+      const cycles = detectCyclesInSubgraph(fileGraph, fileGraph.nodes());
+      cycle = cycles.find((c) => c.includes(resolvedLead)) || [];
+    }
+
+    const hopDetails: string[] = [];
+    let weakestHop = '';
+    let minWeight = Infinity;
+
+    for (let i = 0; i < cycle.length; i++) {
+      const src = cycle[i];
+      const tgt = cycle[(i + 1) % cycle.length];
+      const weight = fileGraph.hasEdge(src, tgt)
+        ? Number(fileGraph.getEdgeAttribute(src, tgt, 'weight') || 1)
+        : 1;
+      const symbolRels = getCrossFileSymbolRelations(symbolGraph, src, tgt, 6);
+      if (weight < minWeight) {
+        minWeight = weight;
+        weakestHop = `${path.basename(src)} -> ${path.basename(tgt)} (weight: ${weight})`;
+      }
+      hopDetails.push(
+        `- ${src} -> ${tgt} (edge weight: ${weight})${symbolRels.length ? `\n  Symbols: ${symbolRels.join('; ')}` : ''}`
+      );
+    }
+
+    const snippet = readSnippet(workspaceRoot, item.path, undefined, undefined, 120);
+    const chainStr = cycle.length > 0 ? [...cycle, cycle[0]].join(' -> ') : item.description;
+
+    const promptInput = formatTargetedPrompts(
+      'Dependency Graph & Cycle-Breaking Architect',
+      [
+        'Focus on breaking the circular dependency at the weakest coupling edge (Dependency Inversion, extracting shared interfaces/types, or merging artificially split modules).',
+        'Cite the exact files and symbol-level import/call hops from the graph data.'
+      ],
+      `Target Hotspot: ${item.path} (${item.category})
+Cycle Chain: ${chainStr}
+Weakest Link to Break: ${weakestHop || 'Determine from lowest symbol coupling below'}
+
+Hop-by-Hop Graph & Symbol Coupling:
+${hopDetails.length > 0 ? hopDetails.join('\n') : 'No cycle hops resolved in fileGraph.'}
+
+${snippet ? `Source Preview (${item.path}):\n\`\`\`typescript\n${snippet}\n\`\`\`` : ''}`
+    );
+
+    return {
+      ...promptInput,
+      targetedEvidence: { cycle, weakestHop, hopCount: cycle.length }
+    };
   }
 }

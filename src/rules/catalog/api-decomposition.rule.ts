@@ -1,6 +1,19 @@
 import type { DirectedGraph } from 'graphology';
-import { isTestOrMockPath, type ArchitectureRule, type FlaggedCandidate, type RuleContext } from '../types.js';
+import {
+  isTestOrMockPath,
+  type ArchitectureRule,
+  type FlaggedCandidate,
+  type RuleContext,
+  type TargetedAnalysisContext,
+  type TargetedAnalysisReportInput
+} from '../types.js';
 import * as path from 'node:path';
+import {
+  formatTargetedPrompts,
+  getFileSymbols,
+  normalizeRelPath,
+  readSnippet
+} from './targeted-helpers.js';
 
 export class ApiDecompositionRule implements ArchitectureRule {
   public readonly id = 'api-decomposition';
@@ -213,5 +226,60 @@ Total LOC: ${candidate.metrics?.loc || 'N/A'}
 Task: Determine if this file genuinely mixes multiple workflows and would benefit from ${actionText}.
 Suggest 2-4 clean kebab-case target file paths (e.g. "usecases/create-invoice.usecase.ts" or "handlers/cancel-subscription.handler.ts").
 Respond strictly in JSON: {"isViolation": boolean, "reason": string, "suggestedFiles": string[]}`;
+  }
+
+  buildTargetedAnalysis(ctx: TargetedAnalysisContext): TargetedAnalysisReportInput {
+    const { item, symbolGraph, workspaceRoot } = ctx;
+    const pattern = item.evidence?.pattern || (item.path.includes('.controller.') ? 'EXTRACT_USECASES' : 'SPLIT_HANDLERS');
+    const symbols = getFileSymbols(symbolGraph, item.path).filter((s) => s.kind === 'function');
+    const normSelf = normalizeRelPath(item.path).toLowerCase();
+
+    const methodRows = symbols
+      .sort((a, b) => b.loc - a.loc)
+      .slice(0, 12)
+      .map((m) => {
+        const externalTargets = new Set<string>();
+        if (symbolGraph.hasNode(m.id)) {
+          symbolGraph.forEachOutEdge(m.id, (_e, _attrs, _s, tgt) => {
+            const tgtAttrs: any = symbolGraph.hasNode(tgt) ? symbolGraph.getNodeAttributes(tgt) : null;
+            const tgtFile = normalizeRelPath(tgtAttrs?.filePath || tgt.split('::')[0]);
+            if (tgtFile && tgtFile.toLowerCase() !== normSelf) {
+              externalTargets.add(path.basename(tgtFile));
+            }
+          });
+        }
+        return `- ${m.name} (L${m.startLine}-L${m.endLine}, ${m.loc} LOC) -> calls: ${Array.from(externalTargets).slice(0, 6).join(', ') || 'local only'}`;
+      });
+
+    const snippet = readSnippet(workspaceRoot, item.path, undefined, undefined, 150);
+    const suggested = item.suggestedFiles && item.suggestedFiles.length > 0
+      ? item.suggestedFiles.join(', ')
+      : pattern === 'EXTRACT_USECASES'
+        ? 'usecases/<action>.usecase.ts'
+        : 'handlers/<action>.handler.ts';
+
+    const promptInput = formatTargetedPrompts(
+      'API Granularity & UseCase/Handler Decomposition Architect',
+      [
+        pattern === 'EXTRACT_USECASES'
+          ? 'Identify fat controller route methods that orchestrate persistence/external SDKs directly and map each to a dedicated *.usecase.ts.'
+          : 'Identify disjoint public command methods in this bloated usecase/service and map each cluster to a dedicated *.handler.ts.',
+        'Provide exact method-to-target-file mappings and constructor injection changes.'
+      ],
+      `Target File: ${item.path}
+Pattern: ${pattern}
+Total LOC: ${item.metrics?.loc ?? 'N/A'} | Methods: ${symbols.length}
+Suggested Extractions: ${suggested}
+
+Per-Method Topology & Outgoing Dependencies:
+${methodRows.join('\n') || '- No methods indexed in symbolGraph'}
+
+${snippet ? `Source Preview (${item.path}):\n\`\`\`typescript\n${snippet}\n\`\`\`` : ''}`
+    );
+
+    return {
+      ...promptInput,
+      targetedEvidence: { pattern, methodCount: symbols.length }
+    };
   }
 }

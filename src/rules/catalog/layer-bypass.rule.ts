@@ -1,6 +1,19 @@
 import type { DirectedGraph } from 'graphology';
-import { isTestOrMockPath, type ArchitectureRule, type FlaggedCandidate, type RuleContext } from '../types.js';
+import {
+  isTestOrMockPath,
+  type ArchitectureRule,
+  type FlaggedCandidate,
+  type RuleContext,
+  type TargetedAnalysisContext,
+  type TargetedAnalysisReportInput
+} from '../types.js';
 import * as path from 'node:path';
+import {
+  formatTargetedPrompts,
+  getCrossFileSymbolRelations,
+  readSnippet,
+  resolveFileGraphNode
+} from './targeted-helpers.js';
 
 export class LayerBypassRule implements ArchitectureRule {
   public readonly id = 'layer-bypass';
@@ -78,5 +91,62 @@ Target Dependency: ${targetFile}
 Issue: Presentation/UI component references infrastructure/database module directly.
 
 Question: Is this file an intentional self-contained script or simple standalone webhook/handler (valid), or does it violate clean architectural layering by bypassing the service/domain layer (violation)?`;
+  }
+
+  buildTargetedAnalysis(ctx: TargetedAnalysisContext): TargetedAnalysisReportInput {
+    const { item, fileGraph, symbolGraph, workspaceRoot } = ctx;
+    const resolvedSrc = resolveFileGraphNode(fileGraph, item.path) || item.path;
+
+    const bypassedTargets: Array<{ target: string; symbols: string[] }> = [];
+    if (fileGraph.hasNode(resolvedSrc)) {
+      fileGraph.forEachOutEdge(resolvedSrc, (_edge, _attrs, _s, target) => {
+        const tgtLayer = fileGraph.getNodeAttribute(target, 'layer');
+        if (tgtLayer === 'infrastructure' || target === item.evidence?.target) {
+          bypassedTargets.push({
+            target,
+            symbols: getCrossFileSymbolRelations(symbolGraph, resolvedSrc, target, 8)
+          });
+        }
+      });
+    } else if (item.evidence?.target) {
+      bypassedTargets.push({
+        target: item.evidence.target,
+        symbols: getCrossFileSymbolRelations(symbolGraph, resolvedSrc, item.evidence.target, 8)
+      });
+    }
+
+    const appFacades = fileGraph
+      .nodes()
+      .filter((n) => fileGraph.getNodeAttribute(n, 'layer') === 'application')
+      .slice(0, 10);
+
+    const bypassSummary = bypassedTargets
+      .map((b) => `- ${b.target}${b.symbols.length ? `\n  Offending calls/imports: ${b.symbols.join('; ')}` : ''}`)
+      .join('\n');
+
+    const snippet = readSnippet(workspaceRoot, item.path, undefined, undefined, 130);
+
+    const promptInput = formatTargetedPrompts(
+      'Clean Architecture & Layering Specialist',
+      [
+        'Explain why direct presentation-to-infrastructure coupling harms testability and domain invariants.',
+        'Recommend routing through an existing application-layer usecase/service if listed, or creating a dedicated port/usecase.'
+      ],
+      `Target File: ${item.path} (Layer: ${item.evidence?.sourceLayer || 'presentation'})
+Description: ${item.description}
+
+Bypassed Infrastructure Targets & Symbol Calls:
+${bypassSummary || '- None resolved in graph'}
+
+Existing Application Layer Modules in Workspace:
+${appFacades.length > 0 ? appFacades.join(', ') : 'None detected'}
+
+${snippet ? `Source Preview (${item.path}):\n\`\`\`typescript\n${snippet}\n\`\`\`` : ''}`
+    );
+
+    return {
+      ...promptInput,
+      targetedEvidence: { bypassedTargets: bypassedTargets.map((b) => b.target), appFacades }
+    };
   }
 }

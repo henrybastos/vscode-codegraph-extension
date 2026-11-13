@@ -1,6 +1,19 @@
 import type { DirectedGraph } from 'graphology';
-import { isTestOrMockPath, type ArchitectureRule, type FlaggedCandidate, type RuleContext } from '../types.js';
+import {
+  isTestOrMockPath,
+  type ArchitectureRule,
+  type FlaggedCandidate,
+  type RuleContext,
+  type TargetedAnalysisContext,
+  type TargetedAnalysisReportInput
+} from '../types.js';
 import * as path from 'node:path';
+import {
+  formatTargetedPrompts,
+  getCrossFileSymbolRelations,
+  readSnippet,
+  resolveFileGraphNode
+} from './targeted-helpers.js';
 
 export class UnstableFoundationRule implements ArchitectureRule {
   public readonly id = 'unstable-foundation';
@@ -65,5 +78,51 @@ export class UnstableFoundationRule implements ArchitectureRule {
     }
 
     return false;
+  }
+
+  buildTargetedAnalysis(ctx: TargetedAnalysisContext): TargetedAnalysisReportInput {
+    const { item, fileGraph, symbolGraph, workspaceRoot } = ctx;
+    const resolvedFile = resolveFileGraphNode(fileGraph, item.path) || item.path;
+
+    const dependents = fileGraph.hasNode(resolvedFile) ? fileGraph.inNeighbors(resolvedFile) : [];
+    const dependencies = fileGraph.hasNode(resolvedFile) ? fileGraph.outNeighbors(resolvedFile) : [];
+    const fanIn = item.metrics?.fanIn ?? dependents.length;
+    const fanOut = item.metrics?.fanOut ?? dependencies.length;
+    const instability = fanIn + fanOut > 0 ? fanOut / (fanIn + fanOut) : 0;
+
+    const depDetails = dependencies.slice(0, 10).map((dep) => {
+      const syms = getCrossFileSymbolRelations(symbolGraph, resolvedFile, dep, 4);
+      return `- ${dep}${syms.length ? ` (${syms.join('; ')})` : ''}`;
+    });
+
+    const callerDetails = dependents.slice(0, 10).map((caller) => {
+      const syms = getCrossFileSymbolRelations(symbolGraph, caller, resolvedFile, 3);
+      return `- ${caller}${syms.length ? ` (${syms.join('; ')})` : ''}`;
+    });
+
+    const snippet = readSnippet(workspaceRoot, item.path, undefined, undefined, 120);
+
+    const promptInput = formatTargetedPrompts(
+      'Stable Dependencies Principle (SDP) & Interface Architect',
+      [
+        'Explain the blast radius (high fan-in) combined with outbound volatility (high fan-out / instability).',
+        'Propose stabilizing this module via Stable Abstractions (extracting interfaces/ports or inverting dependencies on volatile callees).'
+      ],
+      `Target File: ${item.path}
+Metrics: Fan-In=${fanIn}, Fan-Out=${fanOut}, Instability I=${instability.toFixed(2)} (threshold > 0.60)
+
+Dependents (Blast Radius — ${dependents.length} files depend on this):
+${callerDetails.join('\n') || '- None'}
+
+Outbound Dependencies (Volatility Drivers — depends on ${dependencies.length} files):
+${depDetails.join('\n') || '- None'}
+
+${snippet ? `Source Preview (${item.path}):\n\`\`\`typescript\n${snippet}\n\`\`\`` : ''}`
+    );
+
+    return {
+      ...promptInput,
+      targetedEvidence: { fanIn, fanOut, instability, dependentCount: dependents.length, dependencyCount: dependencies.length }
+    };
   }
 }

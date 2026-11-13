@@ -305,6 +305,8 @@ export interface FileAnalysisContext {
   dependencies?: string[];
   dependents?: string[];
   sourceCodeSnippet?: string;
+  customSystemPrompt?: string;
+  customUserPrompt?: string;
 }
 
 export async function runLocalFileAnalysis(
@@ -335,7 +337,9 @@ export async function runLocalFileAnalysis(
   });
 
   try {
-    const systemPrompt = `You are a Principal Software Architect and Refactoring Specialist.
+    const systemPrompt =
+      contextData.customSystemPrompt ||
+      `You are a Principal Software Architect and Refactoring Specialist.
 You analyze architectural code metrics and structural concerns in TypeScript/JavaScript projects, providing sharp, concrete refactoring guidance.
 
 CRITICAL INSTRUCTIONS:
@@ -356,7 +360,9 @@ Format your review in clean Markdown with:
     });
 
     const targetType = contextData.isFolder ? 'Directory / Module' : 'File';
-    const userPrompt = `Conduct an architectural code review and refactoring proposal for this ${targetType.toLowerCase()}:
+    const userPrompt =
+      contextData.customUserPrompt ||
+      `Conduct an architectural code review and refactoring proposal for this ${targetType.toLowerCase()}:
 
 Target: ${contextData.path} (${targetType})
 ${contextData.isFolder && contextData.fileList && contextData.fileList.length > 0 ? `Files in Directory (${contextData.fileList.length}): ${contextData.fileList.join(', ')}\n` : ''}Identified Concern: ${contextData.category || 'Architectural Hotspot'}
