@@ -4,7 +4,6 @@ import { initSqliteDb } from './storage/db.js';
 import { CodeGraphCache } from './graph/graph-manager.js';
 import { initTreeSitter } from './parser/treesitter.js';
 import { WorkspaceIndexer, isIgnoredPath, purgeIgnoredFiles } from './parser/watcher.js';
-import { OpenRouterClient } from './ai/openrouter.js';
 import { SymbolRoleClassifier } from './ai/symbol-classifier.js';
 import { CodeGraphWebviewProvider } from './webview/provider.js';
 
@@ -32,14 +31,7 @@ export async function activate(context: vscode.ExtensionContext) {
   await initTreeSitter(context.extensionPath);
   console.log('[CodeGraph] Tree-sitter initialized successfully');
 
-  // 4. Initialize OpenRouter client & restore secret key
-  const aiClient = new OpenRouterClient();
-  const savedKey = await context.secrets.get('codegraph.openRouterApiKey');
-  if (savedKey) {
-    aiClient.setApiKey(savedKey);
-  }
-
-  // 5. Initialize MiniLM int8 ONNX Symbol Role Classifier
+  // 4. Initialize MiniLM int8 ONNX Symbol Role Classifier
   const roleClassifier = new SymbolRoleClassifier();
   const minilmDir = path.join(context.globalStorageUri.fsPath, 'models', 'minilm');
   roleClassifier.init(minilmDir).catch((err) => {
@@ -100,13 +92,12 @@ export async function activate(context: vscode.ExtensionContext) {
     );
   };
 
-  // 7. Register Webview View Provider
+  // 6. Register Webview View Provider
   provider = new CodeGraphWebviewProvider(
     context.extensionUri,
     context.globalStorageUri.fsPath,
     db,
     graphCache,
-    aiClient,
     reindexWorkspace,
     roleClassifier
   );
@@ -145,19 +136,6 @@ export async function activate(context: vscode.ExtensionContext) {
       panel.onDidDispose(() => {
         provider!.unregisterWebview(panel.webview);
       });
-    }),
-
-    vscode.commands.registerCommand('codegraph.setApiKey', async () => {
-      const key = await vscode.window.showInputBox({
-        prompt: 'Enter your OpenRouter API Key (sk-or-v1-...)',
-        password: true,
-        placeHolder: 'sk-or-v1-...'
-      });
-      if (key !== undefined) {
-        await context.secrets.store('codegraph.openRouterApiKey', key.trim());
-        aiClient.setApiKey(key.trim());
-        vscode.window.showInformationMessage('OpenRouter API key saved securely.');
-      }
     })
   );
 

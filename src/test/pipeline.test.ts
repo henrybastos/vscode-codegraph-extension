@@ -7,7 +7,6 @@ import { syncFileAst, searchSymbols } from '../storage/sync.js';
 import { CodeGraphCache } from '../graph/graph-manager.js';
 import { detectCyclesInSubgraph, computeNodeCoupling } from '../graph/metrics.js';
 import { initTreeSitter, parseFileAst } from '../parser/treesitter.js';
-import { OpenRouterClient } from '../ai/openrouter.js';
 import { generateProjectFileTree, extractProjectMetadata } from '../ai/structure-scanner.js';
 import { buildProjectStructurePrompt } from '../ai/prompts.js';
 import { buildFileGraph, runTier0Assertions } from '../graph/assertions.js';
@@ -150,23 +149,6 @@ test('3. Tree-sitter WASM Parser for TypeScript / TSX / JS', async () => {
     (e) => e.relation === 'CALLS' && e.targetId.includes('validateSession')
   );
   assert.ok(hasCallsEdge, 'Should extract CALLS edge to validateSession');
-});
-
-test('4. OpenRouter Free Model Validation', () => {
-  const client = new OpenRouterClient();
-  assert.strictEqual(
-    client.ensureFreeModel('nvidia/nemotron-3.5-lightning:free'),
-    'nvidia/nemotron-3.5-lightning:free'
-  );
-  assert.strictEqual(
-    client.ensureFreeModel('google/gemma-4-31b-it:free'),
-    'google/gemma-4-31b-it:free'
-  );
-  // Non-free model should fallback to default free model
-  assert.strictEqual(
-    client.ensureFreeModel('openai/gpt-4o'),
-    'nvidia/nemotron-3.5-lightning:free'
-  );
 });
 
 test('5. Project File Structure Scanner & Prompt Generation', () => {

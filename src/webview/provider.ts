@@ -5,13 +5,10 @@ import type { Kysely } from 'kysely';
 import type { DatabaseSchema } from '../storage/types.js';
 import { searchSymbols } from '../storage/sync.js';
 import type { CodeGraphCache } from '../graph/graph-manager.js';
-import type { OpenRouterClient } from '../ai/openrouter.js';
-import { buildArchitecturalAuditPrompt, buildProjectStructurePrompt } from '../ai/prompts.js';
-import { generateProjectFileTree, extractProjectMetadata } from '../ai/structure-scanner.js';
 import { buildFileGraph, runTier0Assertions } from '../graph/assertions.js';
 import { LocalGGUFModelManager } from '../models/model-manager.js';
 import type { SymbolRoleClassifier } from '../ai/symbol-classifier.js';
-import { runLocalLlamaInference, runLocalFileAnalysis, validateCandidatesWithLlama, disposeLocalLlama } from '../ai/local-llama.js';
+import { runLocalFileAnalysis, validateCandidatesWithLlama, disposeLocalLlama } from '../ai/local-llama.js';
 import { DEFAULT_RULES, ApiDecompositionRule, runRuleEngine } from '../rules/index.js';
 // @ts-ignore
 import louvain from 'graphology-communities-louvain';
@@ -21,14 +18,12 @@ export class CodeGraphWebviewProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = 'codegraph.sidebarView';
   private _view?: vscode.WebviewView;
   private activeWebviews = new Set<vscode.Webview>();
-  private currentAbortController: AbortController | null = null;
 
   constructor(
     private readonly extensionUri: vscode.Uri,
     private readonly globalStoragePath: string,
     private readonly db: Kysely<DatabaseSchema>,
     private readonly graphCache: CodeGraphCache,
-    private readonly aiClient: OpenRouterClient,
     private readonly onReindex: (force?: boolean) => Promise<void>,
     private readonly roleClassifier?: SymbolRoleClassifier
   ) {}
@@ -127,97 +122,6 @@ export class CodeGraphWebviewProvider implements vscode.WebviewViewProvider {
         } catch (err: any) {
           vscode.window.showWarningMessage(`Could not open file ${filePath}: ${err.message}`);
         }
-        break;
-      }
-
-      case 'analyze_architecture': {
-        const nodeId = message.nodeId;
-        if (this.currentAbortController) {
-          this.currentAbortController.abort();
-        }
-        this.currentAbortController = new AbortController();
-
-        const config = vscode.workspace.getConfiguration('codegraph');
-        const depth = config.get<number>('maxTraversalDepth', 2);
-        const model = config.get<string>('openRouterModel', 'google/gemma-4-31b-it:free');
-
-        const subgraphContext = this.graphCache.extractSubgraphContext(nodeId, depth);
-        const { system, user } = buildArchitecturalAuditPrompt(subgraphContext);
-
-        webview.postMessage({ type: 'ai_start', payload: { mode: 'symbol', nodeId } });
-
-        await this.aiClient.streamCompletion(
-          [
-            { role: 'system', content: system },
-            { role: 'user', content: user }
-          ],
-          model,
-          {
-            onChunk: (chunk) => {
-              webview.postMessage({ type: 'ai_chunk', payload: chunk });
-            },
-            onComplete: () => {
-              webview.postMessage({ type: 'ai_complete' });
-            },
-            onError: (error) => {
-              webview.postMessage({ type: 'ai_error', payload: error });
-              vscode.window.showErrorMessage(`AI Audit failed: ${error}`);
-            }
-          },
-          this.currentAbortController.signal
-        );
-        break;
-      }
-
-      case 'analyze_project_structure': {
-        const folders = vscode.workspace.workspaceFolders;
-        if (!folders || folders.length === 0) {
-          vscode.window.showWarningMessage('No active workspace folder to analyze.');
-          return;
-        }
-
-        if (this.currentAbortController) {
-          this.currentAbortController.abort();
-        }
-        this.currentAbortController = new AbortController();
-
-        const rootPath = folders[0].uri.fsPath;
-        const config = vscode.workspace.getConfiguration('codegraph');
-        const model = config.get<string>('openRouterModel', 'google/gemma-4-31b-it:free');
-
-        const { tree, stats } = generateProjectFileTree(rootPath);
-        const meta = extractProjectMetadata(rootPath);
-        const { system, user } = buildProjectStructurePrompt(tree, meta);
-
-        webview.postMessage({
-          type: 'ai_start',
-          payload: {
-            mode: 'structure',
-            projectName: path.basename(rootPath),
-            stats
-          }
-        });
-
-        await this.aiClient.streamCompletion(
-          [
-            { role: 'system', content: system },
-            { role: 'user', content: user }
-          ],
-          model,
-          {
-            onChunk: (chunk) => {
-              webview.postMessage({ type: 'ai_chunk', payload: chunk });
-            },
-            onComplete: () => {
-              webview.postMessage({ type: 'ai_complete' });
-            },
-            onError: (error) => {
-              webview.postMessage({ type: 'ai_error', payload: error });
-              vscode.window.showErrorMessage(`Structure audit failed: ${error}`);
-            }
-          },
-          this.currentAbortController.signal
-        );
         break;
       }
 
@@ -478,21 +382,8 @@ export class CodeGraphWebviewProvider implements vscode.WebviewViewProvider {
         break;
       }
 
-      case 'abort_ai': {
-        if (this.currentAbortController) {
-          this.currentAbortController.abort();
-          this.currentAbortController = null;
-        }
-        break;
-      }
-
       case 'reindex_workspace': {
         await this.onReindex(true);
-        break;
-      }
-
-      case 'set_api_key': {
-        await vscode.commands.executeCommand('codegraph.setApiKey');
         break;
       }
     }

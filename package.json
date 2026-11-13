@@ -1,7 +1,7 @@
 {
   "name": "vscode-codegraph-rag",
   "displayName": "CodeGraph RAG & Architecture Intelligence",
-  "description": "Codebase structural graph, lexical FTS5 search, coupling metrics, and OpenRouter AI architectural audits.",
+  "description": "Codebase structural graph, lexical FTS5 search, coupling metrics, and local MiniLM + Qwen 2.5 Coder architectural analysis.",
   "version": "0.1.0",
   "publisher": "antigravity",
   "engines": {
@@ -48,21 +48,11 @@
         "command": "codegraph.openPanel",
         "title": "CodeGraph: Open Graph Explorer Panel",
         "category": "CodeGraph"
-      },
-      {
-        "command": "codegraph.setApiKey",
-        "title": "CodeGraph: Set OpenRouter API Key",
-        "category": "CodeGraph"
       }
     ],
     "configuration": {
       "title": "CodeGraph RAG",
       "properties": {
-        "codegraph.openRouterModel": {
-          "type": "string",
-          "default": "google/gemma-4-31b-it:free",
-          "description": "OpenRouter model identifier for architectural reviews (e.g. google/gemma-4-31b-it:free, cohere/north-mini-code:free, nvidia/nemotron-3.5-lightning:free)."
-        },
         "codegraph.maxTraversalDepth": {
           "type": "number",
           "default": 2,

@@ -3,10 +3,9 @@
     query: string;
     onSearch: (q: string) => void;
     onReindex: () => void;
-    onSetApiKey: () => void;
   }
 
-  let { query = $bindable(''), onSearch, onReindex, onSetApiKey }: Props = $props();
+  let { query = $bindable(''), onSearch, onReindex }: Props = $props();
 
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -70,14 +69,6 @@
         title="Re-index workspace files"
       >
         Re-index
-      </button>
-      <span>•</span>
-      <button
-        onclick={onSetApiKey}
-        class="hover:text-[var(--vscode-foreground)] underline cursor-pointer"
-        title="Configure OpenRouter API Key"
-      >
-        API Key
       </button>
     </div>
   </div>

@@ -1,7 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import SearchBar from './components/SearchBar.svelte';
-  import AdvicePanel from './components/AdvicePanel.svelte';
   import Hotspots, { type HotspotItem, type AnalysisStats, type FileAnalysisState } from './components/Hotspots.svelte';
 
   const vscode = acquireVsCodeApi();
@@ -11,9 +10,6 @@
   let hotspots = $state<HotspotItem[]>([]);
   let stats = $state<AnalysisStats | null>(null);
   let statusMessage = $state('');
-  let aiAdvice = $state('');
-  let auditMode = $state<'structure' | 'symbol' | null>(null);
-  let analysisStats = $state<{ directories: number; files: number } | null>(null);
   let fileAnalyses = $state<Record<string, FileAnalysisState>>({});
 
   let modelStatus = $state<{ isDownloaded: boolean; sizeMb: number }>({ isDownloaded: false, sizeMb: 0 });
@@ -57,24 +53,8 @@
     vscode.postMessage({ command: 'delete_model' });
   }
 
-  function handleAnalyzeProjectStructure() {
-    isAnalyzing = true;
-    aiAdvice = '';
-    auditMode = 'structure';
-    vscode.postMessage({ command: 'analyze_project_structure' });
-  }
-
-  function handleAbortAnalysis() {
-    isAnalyzing = false;
-    vscode.postMessage({ command: 'abort_ai' });
-  }
-
   function handleReindex() {
     vscode.postMessage({ command: 'reindex_workspace' });
-  }
-
-  function handleSetApiKey() {
-    vscode.postMessage({ command: 'set_api_key' });
   }
 
   function handleOpenFile(filePath: string) {
@@ -134,18 +114,6 @@
           durationMs: 0
         };
       }
-    } else if (type === 'ai_start') {
-      isAnalyzing = true;
-      aiAdvice = '';
-      auditMode = payload?.mode || 'structure';
-      analysisStats = payload?.stats || null;
-    } else if (type === 'ai_chunk') {
-      aiAdvice += payload;
-    } else if (type === 'ai_complete') {
-      isAnalyzing = false;
-    } else if (type === 'ai_error') {
-      isAnalyzing = false;
-      aiAdvice += `\n\n> ⚠️ **Error:** ${payload}`;
     } else if (type === 'file_analysis_start') {
       const { id } = payload;
       fileAnalyses[id] = {
@@ -181,7 +149,6 @@
     bind:query
     onSearch={handleSearch}
     onReindex={handleReindex}
-    onSetApiKey={handleSetApiKey}
   />
 
   <!-- Main Work Area -->
