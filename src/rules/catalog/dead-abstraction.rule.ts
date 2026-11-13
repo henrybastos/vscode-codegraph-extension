@@ -1,5 +1,5 @@
 import type { DirectedGraph } from 'graphology';
-import type { ArchitectureRule, FlaggedCandidate, RuleContext } from '../types.js';
+import { isTestOrMockPath, type ArchitectureRule, type FlaggedCandidate, type RuleContext } from '../types.js';
 import * as path from 'node:path';
 
 export class DeadAbstractionRule implements ArchitectureRule {
@@ -43,31 +43,22 @@ export class DeadAbstractionRule implements ArchitectureRule {
     return candidates;
   }
 
-  shouldIgnore(candidate: FlaggedCandidate, _graph: DirectedGraph, _ctx: RuleContext): boolean {
-    const p = candidate.path.toLowerCase().replace(/\\/g, '/');
+  async shouldIgnore(
+    candidate: FlaggedCandidate,
+    _graph: DirectedGraph,
+    ctx: RuleContext
+  ): Promise<boolean> {
+    const normalizedPath = candidate.path.replace(/\\/g, '/');
     const summary: string = candidate.evidence?.summary || '';
-    const name: string = candidate.evidence?.symbolName || '';
+    const rawName: string = candidate.evidence?.symbolName || '';
+    const kind: string = candidate.evidence?.kind || 'symbol';
 
-    // 1. Framework entry points and public API roots
-    if (
-      p.endsWith('main.ts') ||
-      p.endsWith('extension.ts') ||
-      p.endsWith('index.ts') ||
-      p.endsWith('route.ts') ||
-      p.includes('/pages/') ||
-      p.includes('/app/') ||
-      name === 'activate' ||
-      name === 'deactivate'
-    ) {
+    // 1. Fast deterministic filter (0ms): Ignore test and mock files
+    if (isTestOrMockPath(normalizedPath)) {
       return true;
     }
 
-    // 2. Ignore test files
-    if (p.endsWith('.spec.ts') || p.endsWith('.test.ts') || p.includes('/test/')) {
-      return true;
-    }
-
-    // 3. Ignore decorated classes/methods (e.g., NestJS, Fastify, Svelte, CLI)
+    // 2. Fast deterministic AST filter (0ms): Ignore decorated classes/methods (NestJS, Fastify, CLI)
     if (
       summary.includes('@Cron') ||
       summary.includes('@Processor') ||
@@ -78,38 +69,17 @@ export class DeadAbstractionRule implements ArchitectureRule {
       return true;
     }
 
-    // 4. Ignore Data Transfer Objects (DTOs), ViewModels, Schemas, and Event contracts
-    if (
-      name.endsWith('Dto') ||
-      name.endsWith('DTO') ||
-      name.endsWith('Vo') ||
-      name.endsWith('VO') ||
-      name.endsWith('Event') ||
-      name.endsWith('Schema') ||
-      name.endsWith('Payload') ||
-      p.includes('/dto/') ||
-      p.includes('/dtos/') ||
-      p.endsWith('.dto.ts') ||
-      p.endsWith('.contract.ts') ||
-      p.endsWith('.schema.ts') ||
-      p.endsWith('.event.ts')
-    ) {
-      return true;
-    }
+    // 3. Semantic ONNX Abstraction Classification (~2-4ms):
+    // Replaces hardcoded checks for DTOs, VOs, Schemas, Entities, Models, and framework entrypoints
+    if (ctx.roleClassifier && ctx.roleClassifier.isInitialized()) {
+      const classification = await ctx.roleClassifier.classifyAbstraction(rawName, kind, normalizedPath);
 
-    // 5. Ignore Domain Entities, Models, and Types
-    if (
-      name.endsWith('Entity') ||
-      name.endsWith('Model') ||
-      p.includes('/entities/') ||
-      p.includes('/entity/') ||
-      p.includes('/models/') ||
-      p.endsWith('.entity.ts') ||
-      p.endsWith('.model.ts') ||
-      p.includes('/types/') ||
-      p.includes('/interfaces/')
-    ) {
-      return true;
+      if (candidate.evidence) {
+        candidate.evidence.inferredRole = classification.role;
+        candidate.evidence.roleConfidence = classification.score;
+      }
+
+      return classification.shouldIgnore;
     }
 
     return false;

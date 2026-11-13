@@ -1,5 +1,5 @@
 import type { DirectedGraph } from 'graphology';
-import type { ArchitectureRule, FlaggedCandidate, RuleContext } from '../types.js';
+import { isTestOrMockPath, type ArchitectureRule, type FlaggedCandidate, type RuleContext } from '../types.js';
 import * as path from 'node:path';
 
 export class GodFileRule implements ArchitectureRule {
@@ -47,11 +47,9 @@ export class GodFileRule implements ArchitectureRule {
     return candidates;
   }
 
-  shouldIgnore(candidate: FlaggedCandidate, graph: DirectedGraph, _ctx: RuleContext): boolean {
-    const filePath = candidate.path.toLowerCase();
-
+  async shouldIgnore(candidate: FlaggedCandidate, graph: DirectedGraph, ctx: RuleContext): Promise<boolean> {
     // 1. Ignore test and mock files
-    if (filePath.endsWith('.spec.ts') || filePath.endsWith('.test.ts') || filePath.includes('/__tests__/') || filePath.includes('/mock/')) {
+    if (isTestOrMockPath(candidate.path)) {
       return true;
     }
 
@@ -61,9 +59,13 @@ export class GodFileRule implements ArchitectureRule {
       return true;
     }
 
-    // 3. Ignore schema definitions or generated database contracts
-    if (filePath.endsWith('schema.sql') || filePath.endsWith('schema.prisma') || filePath.includes('types.ts')) {
-      if (outDegree <= 1) return true;
+    // 3. Semantic MiniLM check for schema definitions, generated contracts, or pure type files
+    if (outDegree <= 1 && ctx.roleClassifier?.isInitialized()) {
+      const normalizedPath = candidate.path.replace(/\\/g, '/');
+      const classification = await ctx.roleClassifier.classifyModuleRole(normalizedPath);
+      if (classification.role === 'schema_type_contract') {
+        return true;
+      }
     }
 
     return false;

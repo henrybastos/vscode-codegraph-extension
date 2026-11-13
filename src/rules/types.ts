@@ -1,6 +1,17 @@
 import type { DirectedGraph } from 'graphology';
 import type { SymbolRoleClassifier } from '../ai/symbol-classifier.js';
 
+const TEST_OR_MOCK_PATH_RE =
+  /(?:^|\/)(?:__tests__|__mocks__|tests?|mocks?|fixtures?|e2e)(?:\/|$)|\.(?:spec|test|mock|e2e)\.[jt]sx?$/i;
+
+/**
+ * Fast deterministic check for test, spec, mock, fixture, or e2e paths.
+ */
+export function isTestOrMockPath(filePath: string): boolean {
+  if (!filePath) return false;
+  return TEST_OR_MOCK_PATH_RE.test(filePath.replace(/\\/g, '/'));
+}
+
 export type HotspotCategory =
   | 'God File'
   | 'Circular Dependency'

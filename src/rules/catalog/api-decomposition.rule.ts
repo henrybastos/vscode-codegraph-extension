@@ -1,5 +1,5 @@
 import type { DirectedGraph } from 'graphology';
-import type { ArchitectureRule, FlaggedCandidate, RuleContext } from '../types.js';
+import { isTestOrMockPath, type ArchitectureRule, type FlaggedCandidate, type RuleContext } from '../types.js';
 import * as path from 'node:path';
 
 export class ApiDecompositionRule implements ArchitectureRule {
@@ -159,10 +159,8 @@ export class ApiDecompositionRule implements ArchitectureRule {
   }
 
   shouldIgnore(candidate: FlaggedCandidate, _graph: DirectedGraph, _ctx: RuleContext): boolean {
-    const p = candidate.path.toLowerCase().replace(/\\/g, '/');
-
     // 1. Ignore test and mock files
-    if (p.endsWith('.spec.ts') || p.endsWith('.test.ts') || p.includes('/test/') || p.includes('/mock/')) {
+    if (isTestOrMockPath(candidate.path)) {
       return true;
     }
 

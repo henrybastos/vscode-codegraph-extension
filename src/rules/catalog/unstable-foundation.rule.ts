@@ -1,5 +1,5 @@
 import type { DirectedGraph } from 'graphology';
-import type { ArchitectureRule, FlaggedCandidate, RuleContext } from '../types.js';
+import { isTestOrMockPath, type ArchitectureRule, type FlaggedCandidate, type RuleContext } from '../types.js';
 import * as path from 'node:path';
 
 export class UnstableFoundationRule implements ArchitectureRule {
@@ -39,26 +39,29 @@ export class UnstableFoundationRule implements ArchitectureRule {
     return candidates;
   }
 
-  shouldIgnore(candidate: FlaggedCandidate, _graph: DirectedGraph, _ctx: RuleContext): boolean {
-    const p = candidate.path.toLowerCase().replace(/\\/g, '/');
+  async shouldIgnore(
+    candidate: FlaggedCandidate,
+    _graph: DirectedGraph,
+    ctx: RuleContext
+  ): Promise<boolean> {
+    const normalizedPath = candidate.path.replace(/\\/g, '/');
 
-    // Deterministic whitelist: framework wiring files, DI containers, composition roots
-    if (
-      p.endsWith('app.module.ts') ||
-      p.endsWith('.module.ts') ||
-      p.endsWith('extension.ts') ||
-      p.endsWith('main.ts') ||
-      p.includes('container') ||
-      p.includes('registry') ||
-      p.includes('router') ||
-      p.endsWith('index.ts')
-    ) {
+    // 1. Fast deterministic filter (0ms): Ignore test/mock files
+    if (isTestOrMockPath(normalizedPath)) {
       return true;
     }
 
-    // Ignore test/mock files
-    if (p.endsWith('.spec.ts') || p.endsWith('.test.ts') || p.includes('/mock/')) {
-      return true;
+    // 2. Semantic ONNX Module Classification (~2-4ms):
+    // Replaces hardcoded checks for framework wiring files, DI containers, composition roots
+    if (ctx.roleClassifier && ctx.roleClassifier.isInitialized()) {
+      const classification = await ctx.roleClassifier.classifyModuleRole(normalizedPath);
+
+      if (candidate.evidence) {
+        candidate.evidence.inferredRole = classification.role;
+        candidate.evidence.roleConfidence = classification.score;
+      }
+
+      return classification.role === 'composition_root_wiring';
     }
 
     return false;

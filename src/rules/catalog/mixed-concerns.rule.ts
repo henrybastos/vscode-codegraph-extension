@@ -1,5 +1,5 @@
 import type { DirectedGraph } from 'graphology';
-import type { ArchitectureRule, FlaggedCandidate, RuleContext } from '../types.js';
+import { isTestOrMockPath, type ArchitectureRule, type FlaggedCandidate, type RuleContext } from '../types.js';
 import * as path from 'node:path';
 
 export class MixedConcernsRule implements ArchitectureRule {
@@ -71,62 +71,42 @@ export class MixedConcernsRule implements ArchitectureRule {
     return candidates;
   }
 
-  shouldIgnore(candidate: FlaggedCandidate, _graph: DirectedGraph, _ctx: RuleContext): boolean {
-    const p = candidate.path.toLowerCase().replace(/\\/g, '/');
+  async shouldIgnore(
+    candidate: FlaggedCandidate,
+    _graph: DirectedGraph,
+    ctx: RuleContext
+  ): Promise<boolean> {
+    const normalizedPath = candidate.path.replace(/\\/g, '/');
     const files: string[] = candidate.evidence?.files || [];
     const layers: string[] = candidate.evidence?.layers || [];
     const hasPolar = layers.includes('presentation') && layers.includes('infrastructure');
 
-    // 1. If only 0 or 1 layer is present and no polar conflict exists, it is a single-concern folder
+    // 1. Fast deterministic filter (0ms): Ignore test or mock directories
+    if (isTestOrMockPath(normalizedPath)) {
+      return true;
+    }
+
+    // 2. If only 0 or 1 layer is present and no polar conflict exists, it is a single-concern folder
     if (layers.length <= 1 && !hasPolar) {
       return true;
     }
 
-    // 2. Whitelist standard single-concern architectural layer folders (unless polar conflict)
-    const folderBase = path.posix.basename(p);
-    const standardSingleConcernFolders = new Set([
-      'usecases',
-      'use-cases',
-      'controllers',
-      'services',
-      'repositories',
-      'entities',
-      'models',
-      'dtos',
-      'routes',
-      'handlers',
-      'ports',
-      'adapters',
-      'domain',
-      'components',
-      'hooks',
-      'utils',
-      'helpers'
-    ]);
-    if (standardSingleConcernFolders.has(folderBase) && !hasPolar) {
-      return true;
-    }
+    // 3. Semantic ONNX Folder Concern Classification (~2-4ms):
+    // Replaces hardcoded single-concern folder sets and vertical slice filename lists
+    if (ctx.roleClassifier && ctx.roleClassifier.isInitialized()) {
+      const classification = await ctx.roleClassifier.classifyFolderConcern(normalizedPath, files);
 
-    // 3. Whitelist known Vertical Slice / Feature folders:
-    // Files containing *.module.ts, *.processor.ts, queue worker, or routes
-    const isVerticalSlice = files.some(
-      (f) =>
-        f.endsWith('.module.ts') ||
-        f.endsWith('.processor.ts') ||
-        f.includes('worker') ||
-        f.includes('queue') ||
-        f.startsWith('+') ||
-        f === 'route.ts' ||
-        f === 'page.tsx' ||
-        f === 'page.svelte'
-    );
-    if (isVerticalSlice) {
-      return true;
-    }
+      if (candidate.evidence) {
+        candidate.evidence.inferredRole = classification.role;
+        candidate.evidence.roleConfidence = classification.score;
+      }
 
-    // 4. Ignore tests or mock directories
-    if (p.includes('/test') || p.includes('/__tests__') || p.includes('/mock')) {
-      return true;
+      if (classification.role === 'vertical_feature_slice') {
+        return true;
+      }
+      if (classification.role === 'single_concern_folder' && !hasPolar) {
+        return true;
+      }
     }
 
     return false;

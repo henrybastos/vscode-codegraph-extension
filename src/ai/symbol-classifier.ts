@@ -9,11 +9,30 @@ export type SymbolRole =
   | 'factory_builder'
   | 'core_logic';
 
-export interface ClassificationResult {
-  role: SymbolRole;
+export type AbstractionRole =
+  | 'dto_contract_schema'
+  | 'domain_entity_model'
+  | 'framework_entrypoint'
+  | 'unused_code';
+
+export type ModuleRole =
+  | 'composition_root_wiring'
+  | 'cli_seed_migration'
+  | 'schema_type_contract'
+  | 'domain_module';
+
+export type FolderConcernRole =
+  | 'single_concern_folder'
+  | 'vertical_feature_slice'
+  | 'mixed_unstructured_folder';
+
+export interface GenericClassificationResult<T extends string> {
+  role: T;
   score: number;
   shouldIgnore: boolean;
 }
+
+export type ClassificationResult = GenericClassificationResult<SymbolRole>;
 
 // Rich natural-language + code-cue descriptions give MiniLM strong semantic anchors
 export const ROLE_ANCHORS: Record<SymbolRole, string> = {
@@ -27,13 +46,51 @@ export const ROLE_ANCHORS: Record<SymbolRole, string> = {
     'Core business logic, domain calculation, data validation, repository query, service workflow',
 };
 
+export const ABSTRACTION_ANCHORS: Record<AbstractionRole, string> = {
+  dto_contract_schema:
+    'Data transfer object, DTO, view model, VO, event payload, validation schema, API contract, request response type, interface definition',
+  domain_entity_model:
+    'Domain entity, database model, ORM record, persistence entity, aggregate root, data model',
+  framework_entrypoint:
+    'Application entry point, main bootstrap, VS Code extension activate deactivate, HTTP route handler, Next.js page, barrel index export',
+  unused_code:
+    'Unused helper function, dead utility, orphaned business service, unreferenced class',
+};
+
+export const MODULE_ANCHORS: Record<ModuleRole, string> = {
+  composition_root_wiring:
+    'Application bootstrap entry point, dependency injection container, NestJS app module wiring, IoC registry, router configuration, extension activation, barrel index export',
+  cli_seed_migration:
+    'Database migration script, seed data loader, CLI command tool, build script, developer setup utility',
+  schema_type_contract:
+    'Database SQL or Prisma schema, TypeScript type definitions, shared interfaces, data contracts',
+  domain_module:
+    'User service, business domain logic, usecase handler, data repository, API controller, React UI component',
+};
+
+export const FOLDER_CONCERN_ANCHORS: Record<FolderConcernRole, string> = {
+  single_concern_folder:
+    'Standard single-concern architectural folder such as usecases, controllers, services, repositories, entities, models, dtos, routes, handlers, ports, adapters, components, hooks, utils, helpers',
+  vertical_feature_slice:
+    'Cohesive vertical feature slice or NestJS feature module containing module definition, processor, worker, queue, route, or page files',
+  mixed_unstructured_folder:
+    'Unstructured directory mixing unrelated domain logic, UI components, and database persistence',
+};
+
 const MINILM_ONNX_URL =
   'https://huggingface.co/Xenova/all-MiniLM-L6-v2/resolve/main/onnx/model_quantized.onnx';
+
+function splitIdentifierWords(text: string): string {
+  return text.replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/[._/\\-]+/g, ' ').trim();
+}
 
 export class SymbolRoleClassifier {
   private session!: ort.InferenceSession;
   private tokenizer!: PreTrainedTokenizer;
   private roleEmbeddings = new Map<SymbolRole, Float32Array>();
+  private abstractionEmbeddings = new Map<AbstractionRole, Float32Array>();
+  private moduleEmbeddings = new Map<ModuleRole, Float32Array>();
+  private folderEmbeddings = new Map<FolderConcernRole, Float32Array>();
   private initialized = false;
 
   public isInitialized(): boolean {
@@ -75,34 +132,45 @@ export class SymbolRoleClassifier {
       this.tokenizer = (await AutoTokenizer.from_pretrained('Xenova/all-MiniLM-L6-v2')) as PreTrainedTokenizer;
     }
 
-    // Pre-compute and cache L2-normalized embeddings for each role
-    for (const [role, description] of Object.entries(ROLE_ANCHORS) as [SymbolRole, string][]) {
-      const vec = await this.embed(description);
-      this.roleEmbeddings.set(role, vec);
-    }
+    // Pre-compute and cache L2-normalized embeddings for all anchor sets
+    await this.precomputeAnchors(ROLE_ANCHORS, this.roleEmbeddings);
+    await this.precomputeAnchors(ABSTRACTION_ANCHORS, this.abstractionEmbeddings);
+    await this.precomputeAnchors(MODULE_ANCHORS, this.moduleEmbeddings);
+    await this.precomputeAnchors(FOLDER_CONCERN_ANCHORS, this.folderEmbeddings);
 
     this.initialized = true;
   }
 
-  /**
-   * 2. RUNTIME: Classify a symbol in ~2-4ms using dot product against cached role vectors
-   */
-  async classify(fnName: string, filePath: string, threshold = 0.18): Promise<ClassificationResult> {
-    if (!this.initialized) {
-      return { role: 'core_logic', score: 0, shouldIgnore: false };
+  private async precomputeAnchors<T extends string>(
+    anchors: Record<T, string>,
+    targetMap: Map<T, Float32Array>
+  ): Promise<void> {
+    for (const [role, description] of Object.entries(anchors) as [T, string][]) {
+      const vec = await this.embed(description);
+      targetMap.set(role, vec);
     }
+  }
 
-    // Format camelCase/snake_case into readable words + file path context
-    const readableName = fnName.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/_/g, ' ');
-    const queryText = `Function: ${readableName} | File path: ${filePath}`;
+  /**
+   * 2. RUNTIME: Generic dot-product scorer against cached anchor vectors
+   */
+  private async classifyAgainst<T extends string>(
+    queryText: string,
+    anchorMap: Map<T, Float32Array>,
+    fallbackRole: T,
+    threshold: number
+  ): Promise<GenericClassificationResult<T>> {
+    if (!this.initialized) {
+      return { role: fallbackRole, score: 0, shouldIgnore: false };
+    }
 
     const queryVec = await this.embed(queryText);
 
-    let bestRole: SymbolRole = 'core_logic';
+    let bestRole: T = fallbackRole;
     let bestScore = -1;
 
     // Because vectors are L2-normalized, dot product === cosine similarity
-    for (const [role, anchorVec] of this.roleEmbeddings.entries()) {
+    for (const [role, anchorVec] of anchorMap.entries()) {
       const score = this.dotProduct(queryVec, anchorVec);
       if (score > bestScore) {
         bestScore = score;
@@ -110,16 +178,65 @@ export class SymbolRoleClassifier {
       }
     }
 
-    // Fall back to core_logic if confidence is below threshold
     if (bestScore < threshold) {
-      bestRole = 'core_logic';
+      bestRole = fallbackRole;
     }
 
     return {
       role: bestRole,
       score: Number(bestScore.toFixed(4)),
-      shouldIgnore: bestRole !== 'core_logic',
+      shouldIgnore: bestRole !== fallbackRole,
     };
+  }
+
+  /**
+   * Classify a function/method role (Feature Envy filter)
+   */
+  async classify(fnName: string, filePath: string, threshold = 0.18): Promise<ClassificationResult> {
+    const readableName = splitIdentifierWords(fnName);
+    const queryText = `Function: ${readableName} | File path: ${filePath}`;
+    return this.classifyAgainst(queryText, this.roleEmbeddings, 'core_logic', threshold);
+  }
+
+  /**
+   * Classify an exported symbol abstraction (Dead Abstraction filter)
+   */
+  async classifyAbstraction(
+    symbolName: string,
+    kind: string,
+    filePath: string,
+    threshold = 0.20
+  ): Promise<GenericClassificationResult<AbstractionRole>> {
+    const readableName = splitIdentifierWords(symbolName);
+    const readablePath = splitIdentifierWords(filePath);
+    const queryText = `Exported ${kind}: ${readableName} | File: ${readablePath} (${filePath})`;
+    return this.classifyAgainst(queryText, this.abstractionEmbeddings, 'unused_code', threshold);
+  }
+
+  /**
+   * Classify a module/file wiring role (Unstable Foundation, Layer Bypass, God File filters)
+   */
+  async classifyModuleRole(
+    filePath: string,
+    threshold = 0.20
+  ): Promise<GenericClassificationResult<ModuleRole>> {
+    const readablePath = splitIdentifierWords(filePath);
+    const queryText = `Source file: ${readablePath} | Path: ${filePath}`;
+    return this.classifyAgainst(queryText, this.moduleEmbeddings, 'domain_module', threshold);
+  }
+
+  /**
+   * Classify a directory's architectural concern (Mixed Concerns filter)
+   */
+  async classifyFolderConcern(
+    folderPath: string,
+    fileNames: string[],
+    threshold = 0.20
+  ): Promise<GenericClassificationResult<FolderConcernRole>> {
+    const readableFolder = splitIdentifierWords(folderPath);
+    const sampleFiles = fileNames.slice(0, 8).map(splitIdentifierWords).join(', ');
+    const queryText = `Folder: ${readableFolder} (${folderPath}) | Files: ${sampleFiles}`;
+    return this.classifyAgainst(queryText, this.folderEmbeddings, 'mixed_unstructured_folder', threshold);
   }
 
   /**

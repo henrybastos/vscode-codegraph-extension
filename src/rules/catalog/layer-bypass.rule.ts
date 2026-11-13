@@ -1,5 +1,5 @@
 import type { DirectedGraph } from 'graphology';
-import type { ArchitectureRule, FlaggedCandidate, RuleContext } from '../types.js';
+import { isTestOrMockPath, type ArchitectureRule, type FlaggedCandidate, type RuleContext } from '../types.js';
 import * as path from 'node:path';
 
 export class LayerBypassRule implements ArchitectureRule {
@@ -40,22 +40,32 @@ export class LayerBypassRule implements ArchitectureRule {
     return candidates;
   }
 
-  shouldIgnore(candidate: FlaggedCandidate, _graph: DirectedGraph, _ctx: RuleContext): boolean {
-    const p = candidate.path.toLowerCase().replace(/\\/g, '/');
+  async shouldIgnore(
+    candidate: FlaggedCandidate,
+    _graph: DirectedGraph,
+    ctx: RuleContext
+  ): Promise<boolean> {
+    const normalizedPath = candidate.path.replace(/\\/g, '/');
 
-    // 1. Ignore test and spec files
-    if (p.endsWith('.spec.ts') || p.endsWith('.test.ts') || p.includes('/test/') || p.includes('/__tests__/')) {
+    // 1. Fast deterministic filter (0ms): Ignore test and spec files
+    if (isTestOrMockPath(normalizedPath)) {
       return true;
     }
 
-    // 2. Ignore seed scripts, migrations, and CLI setup
-    if (p.includes('seed') || p.includes('migration') || p.includes('/scripts/') || p.includes('/tools/')) {
-      return true;
-    }
+    // 2. Semantic ONNX Module Classification (~2-4ms):
+    // Replaces hardcoded checks for seed/migration/CLI scripts and composition roots/module binders
+    if (ctx.roleClassifier && ctx.roleClassifier.isInitialized()) {
+      const classification = await ctx.roleClassifier.classifyModuleRole(normalizedPath);
 
-    // 3. Ignore composition roots and module binders
-    if (p.endsWith('main.ts') || p.endsWith('extension.ts') || p.endsWith('.module.ts') || p.endsWith('index.ts')) {
-      return true;
+      if (candidate.evidence) {
+        candidate.evidence.inferredRole = classification.role;
+        candidate.evidence.roleConfidence = classification.score;
+      }
+
+      return (
+        classification.role === 'composition_root_wiring' ||
+        classification.role === 'cli_seed_migration'
+      );
     }
 
     return false;

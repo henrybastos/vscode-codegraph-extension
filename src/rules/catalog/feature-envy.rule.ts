@@ -1,5 +1,5 @@
 import type { DirectedGraph } from 'graphology';
-import type { ArchitectureRule, FlaggedCandidate, RuleContext } from '../types.js';
+import { isTestOrMockPath, type ArchitectureRule, type FlaggedCandidate, type RuleContext } from '../types.js';
 import * as path from 'node:path';
 
 export class FeatureEnvyRule implements ArchitectureRule {
@@ -101,17 +101,9 @@ export class FeatureEnvyRule implements ArchitectureRule {
   ): Promise<boolean> {
     const rawFnName = candidate.evidence?.functionName || candidate.evidence?.symbolName || '';
     const normalizedPath = candidate.path.replace(/\\/g, '/');
-    const lowerPath = normalizedPath.toLowerCase();
 
     // 1. Fast deterministic filter (0ms): Ignore test and mock files before running ONNX
-    if (
-      lowerPath.endsWith('.spec.ts') ||
-      lowerPath.endsWith('.test.ts') ||
-      lowerPath.includes('/test/') ||
-      lowerPath.includes('/__tests__/') ||
-      lowerPath.includes('/mock/') ||
-      lowerPath.includes('/__mocks__/')
-    ) {
+    if (isTestOrMockPath(normalizedPath)) {
       return true;
     }
 

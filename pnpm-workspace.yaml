@@ -1,3 +1,6 @@
 packages:
   - '.'
   - 'webview'
+onlyBuiltDependencies:
+  - node-llama-cpp
+  - onnxruntime-node

@@ -246,10 +246,15 @@ test('8. Modular 7-Rule Plugin Catalog & Deterministic Ignore Filters', async ()
   fileGraph.addEdge('src/god.ts', 'src/infra/repo.ts', { weight: 1 });
   // constants.ts has outDegree === 0
 
+  const roleClassifier = new SymbolRoleClassifier();
+  const modelDir = path.resolve('dist/test_storage/minilm');
+  await roleClassifier.init(modelDir);
+
   const ctx: any = {
     fileGraph,
     symbolGraph,
     communities: {},
+    roleClassifier,
     fileMetrics: new Map([
       ['src/god.ts', { loc: 500, symbolCount: 20, fanIn: 1, fanOut: 1, instability: 0.5 }],
       ['src/constants.ts', { loc: 450, symbolCount: 25, fanIn: 5, fanOut: 0, instability: 0 }],
@@ -265,9 +270,9 @@ test('8. Modular 7-Rule Plugin Catalog & Deterministic Ignore Filters', async ()
   assert.ok(godCandidates.some(c => c.path === 'src/constants.ts'));
   // constants.ts has outDegree === 0 and must be ignored deterministically
   const constCandidate = godCandidates.find(c => c.path === 'src/constants.ts')!;
-  assert.strictEqual(godRule.shouldIgnore(constCandidate, fileGraph, ctx), true, 'Pure constants with outDegree === 0 must be ignored');
+  assert.strictEqual(await godRule.shouldIgnore(constCandidate, fileGraph, ctx), true, 'Pure constants with outDegree === 0 must be ignored');
   const realGodCandidate = godCandidates.find(c => c.path === 'src/god.ts')!;
-  assert.strictEqual(godRule.shouldIgnore(realGodCandidate, fileGraph, ctx), false);
+  assert.strictEqual(await godRule.shouldIgnore(realGodCandidate, fileGraph, ctx), false);
 
   // Rule 3: LayerBypassRule
   fileGraph.addEdge('src/presentation/view.ts', 'src/infra/repo.ts', { weight: 1 });
@@ -277,7 +282,7 @@ test('8. Modular 7-Rule Plugin Catalog & Deterministic Ignore Filters', async ()
   assert.ok(bypassCandidates.some(c => c.path === 'src/presentation/view.ts'));
   const testCandidate = bypassCandidates.find(c => c.path === 'src/presentation/view.spec.ts');
   if (testCandidate) {
-    assert.strictEqual(bypassRule.shouldIgnore(testCandidate, fileGraph, ctx), true, 'Test files must be ignored');
+    assert.strictEqual(await bypassRule.shouldIgnore(testCandidate, fileGraph, ctx), true, 'Test files must be ignored');
   }
 
   // Rule 4: MixedConcernsRule
@@ -286,13 +291,13 @@ test('8. Modular 7-Rule Plugin Catalog & Deterministic Ignore Filters', async ()
     path: 'src/feature',
     evidence: { files: ['order.controller.ts', 'order.module.ts', 'order.processor.ts'] }
   };
-  assert.strictEqual(mixedRule.shouldIgnore(dummyVerticalSliceCand, fileGraph, ctx), true, 'Vertical slice folders must be ignored');
+  assert.strictEqual(await mixedRule.shouldIgnore(dummyVerticalSliceCand, fileGraph, ctx), true, 'Vertical slice folders must be ignored');
 
   const usecasesCand: any = {
     path: 'apps/users-service/src/usecases',
     evidence: { files: ['create-user.usecase.ts', 'find-user.usecase.ts'], layers: ['application'] }
   };
-  assert.strictEqual(mixedRule.shouldIgnore(usecasesCand, fileGraph, ctx), true, 'Standard usecases/application-layer folder must be ignored');
+  assert.strictEqual(await mixedRule.shouldIgnore(usecasesCand, fileGraph, ctx), true, 'Standard usecases/application-layer folder must be ignored');
 
   // Rule 6: FeatureEnvyRule
   symbolGraph.addNode('src/user.ts::calculateTax', { filePath: 'src/user.ts', name: 'calculateTax', kind: 'function' });
@@ -321,13 +326,13 @@ test('8. Modular 7-Rule Plugin Catalog & Deterministic Ignore Filters', async ()
     path: 'src/tasks.ts',
     evidence: { summary: '[exported] @Cron()', symbolName: 'handleCron' }
   };
-  assert.strictEqual(deadRule.shouldIgnore(cronCandidate, fileGraph, ctx), true, '@Cron() functions must be ignored');
+  assert.strictEqual(await deadRule.shouldIgnore(cronCandidate, fileGraph, ctx), true, '@Cron() functions must be ignored');
 
   const dtoCandidate: any = {
     path: 'apps/users-service/src/dtos/user.dto.ts',
     evidence: { summary: '[exported]', symbolName: 'RegisterClinicManagerDto' }
   };
-  assert.strictEqual(deadRule.shouldIgnore(dtoCandidate, fileGraph, ctx), true, 'DTO classes must be ignored');
+  assert.strictEqual(await deadRule.shouldIgnore(dtoCandidate, fileGraph, ctx), true, 'DTO classes must be ignored');
 });
 
 test('9. 3-Step Execution Loop in runRuleEngine', async () => {
@@ -509,6 +514,37 @@ test('11. SymbolRoleClassifier & MiniLM ONNX Semantic Role Classification', asyn
   const shouldIgnoreLogic = await envyRule.shouldIgnore(logicCandidate, new DirectedGraph(), ctxWithClassifier);
   assert.strictEqual(shouldIgnoreLogic, false);
   assert.strictEqual(logicCandidate.evidence.inferredRole, 'core_logic');
+
+  // Test 6: classifyAbstraction
+  const dtoRes = await classifier.classifyAbstraction(
+    'RegisterClinicManagerDto',
+    'class',
+    'apps/users-service/src/dtos/user.dto.ts'
+  );
+  assert.strictEqual(dtoRes.role, 'dto_contract_schema');
+
+  // Test 7: classifyModuleRole
+  const appModuleRes = await classifier.classifyModuleRole('apps/api/src/app.module.ts');
+  assert.strictEqual(appModuleRes.role, 'composition_root_wiring');
+
+  const seedRes = await classifier.classifyModuleRole('src/db/seed.ts');
+  assert.strictEqual(seedRes.role, 'cli_seed_migration');
+
+  const serviceRes = await classifier.classifyModuleRole('src/services/user.service.ts');
+  assert.strictEqual(serviceRes.role, 'domain_module');
+
+  // Test 8: classifyFolderConcern
+  const usecasesFolderRes = await classifier.classifyFolderConcern(
+    'apps/users-service/src/usecases',
+    ['create-user.usecase.ts', 'find-user.usecase.ts']
+  );
+  assert.strictEqual(usecasesFolderRes.role, 'single_concern_folder');
+
+  const sliceFolderRes = await classifier.classifyFolderConcern(
+    'src/feature',
+    ['order.controller.ts', 'order.module.ts', 'order.processor.ts']
+  );
+  assert.strictEqual(sliceFolderRes.role, 'vertical_feature_slice');
 });
 
 
